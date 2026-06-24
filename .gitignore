@@ -60,3 +60,6 @@ dkms.conf
 
 # personal data
 my_data/*
+
+# temp file that test codes
+test.c
