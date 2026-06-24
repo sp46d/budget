@@ -2,5 +2,5 @@ CC = cc
 CFLAGS = -Wall -Wextra -g
 LDFLAGS = -lsqlite3 -lreadline
 
-mybudget: mybudget.c
-	$(CC) $(CFLAGS) mybudget.c -o mybudget $(LDFLAGS)
+mybudget: main.c
+	$(CC) $(CFLAGS) main.c -o bin/main $(LDFLAGS)
