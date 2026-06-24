@@ -2,8 +2,9 @@
 // DONE: Check duplicate items and retain only one and discard the other
 // DONE: Work on import logic flow, so that I can feed the raw statement files
 // as is (apply awk parser on the way)
+// DONE: git the code and upload it to github
 // WORKING: Add more categories
-// TODO: Switch from fgets() to readline()
+// WORKING: Switch from fgets() to readline()
 // TODO: Clean up all functions and codes
 // TODO: Split codes into multiple files
 // TODO: When updating data, report the number of items affected (category,
@@ -14,6 +15,8 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,23 +39,29 @@ void exec_categories(void);
 void add_categories(void);
 void view_categories(void);
 void view_rules(void);
+bool is_valid_int(const char* string);
 static int get_id_callback(void* data, int argc, char** argv, char** azColName);
 static int add_item(sqlite3** db, const char* input, const char* tablename);
 static int print_items(sqlite3** db, const char* tablename);
 
 int main(void)
 {
-    char input[1024];
+    char* input;
+    const char* prompt
+        = "\n[I]mport statements  [R]etrieve/reports  [C]ategories  "
+          "[U]pdate database\nbudget> ";
     while (1) {
-        printf("\n[I]mport statements  [R]etrieve/reports  [C]ategories  "
-               "[U]pdate database\n");
-        printf("budget> ");
-        if (fgets(input, sizeof(input), stdin) != NULL) {
-            input[strlen(input) - 1] = '\0'; // remove '\n'
-            if (strcmp(input, "exit") == 0 || strcmp(input, "quit") == 0)
+        if ((input = readline(prompt)) != NULL) {
+            if (*input) {
+                add_history(input);
+            }
+            if (strcmp(input, "exit") == 0 || strcmp(input, "quit") == 0) {
+                free(input);
                 break;
-            else
+            } else {
                 execute(input);
+            }
+            free(input);
         }
     }
     return 0;
@@ -61,36 +70,40 @@ int main(void)
 void execute(const char* input)
 {
     // char buf[1024];
-    if (!strcmp(input, "i") || !strcmp(input, "I")) {
+    if (strcmp(input, "i") == 0 || strcmp(input, "I") == 0) {
         import_bank_stmt();
-    } else if (!strcmp(input, "r") || !strcmp(input, "R")) {
+    } else if (strcmp(input, "r") == 0 || strcmp(input, "R") == 0) {
         query_budget();
-    } else if (!strcmp(input, "u") || !strcmp(input, "U")) {
+    } else if (strcmp(input, "u") == 0 || strcmp(input, "U") == 0) {
         // refreshing tables means that it deletes all duplicate rows and
         // categorize transactions that have not yet been categorized.
         delete_duplicates("budget.db");
         update_categories("budget.db");
-    } else if (!strcmp(input, "c") || !strcmp(input, "C")) {
+    } else if (strcmp(input, "c") == 0 || strcmp(input, "C") == 0) {
         exec_categories();
     }
 }
 
 void import_bank_stmt(void)
 {
-    char filename[128];
+    char* filename;
+    const char* prompt = "\nEnter file name or  [M]ain menu\n> ";
     while (1) {
-        printf("\nEnter file name or  [M]ain menu\n");
-        printf("> ");
-        if (fgets(filename, sizeof(filename), stdin) != NULL) {
-            filename[strlen(filename) - 1] = '\0'; // remove '\n'
-            if (!strcmp(filename, "m") || !strcmp(filename, "M")) {
+        if ((filename = readline(prompt)) != NULL) {
+            if (*filename) {
+                add_history(filename);
+            }
+            if (strcmp(filename, "m") == 0 || strcmp(filename, "M") == 0) {
+                free(filename);
                 break;
             } else if (check_file(filename)) {
                 import_csv(filename);
                 printf("\n>> \"%s\" successfully imported\n", filename);
+                free(filename);
                 break;
             }
         }
+        free(filename);
     }
 }
 
@@ -148,7 +161,6 @@ void import_csv(char* filename)
     // Import statement from CSV
     FILE* fp = fopen(csv_file, "r");
     char line[1024];
-    char* linep;
     int row = 0;
     sqlite3_stmt* out_stmt;
 
@@ -164,7 +176,7 @@ void import_csv(char* filename)
     }
     while (fgets(line, sizeof(line), fp)) {
         row++;
-        linep = line;
+        char* linep = line;
         char* date = strsep(&linep, ",");
         char* desc = strsep(&linep, ",");
         char* desc_n = strsep(&linep, ",");
@@ -198,22 +210,30 @@ void import_csv(char* filename)
 
 void query_budget(void)
 {
-    char* input = NULL;
-    size_t linecap = 0;
-
-    printf("Filters: ");
-    ssize_t len = getline(&input, &linecap, stdin);
-    if (len < 0) {
-        fprintf(stderr, "getline: error or EOF\n");
-        free(input);
-        exit(1);
+    char* input = readline("Filters: ");
+    if (input != NULL) {
+        if (*input) {
+            add_history(input);
+        }
+        sql_query("budget.db", input);
     }
-    // remove '\n' from input
-    input[strlen(input) - 1] = '\0';
-
-    sql_query("budget.db", input);
-
     free(input);
+}
+
+bool is_valid_int(const char* string)
+{
+    // check if string is number. returns true if string is number or empty.
+    // returns false otherwise.
+    if (string == NULL) {
+        // not a valid string
+        return false;
+    }
+    char* endptr = NULL;
+    strtol(string, &endptr, 10);
+    if (*endptr == '\0') {
+        return true;
+    }
+    return false;
 }
 
 void sql_query(const char* database, const char* user_filter)
@@ -256,17 +276,22 @@ void sql_query(const char* database, const char* user_filter)
     }
 
     // Take input from user for number of items for display
-    char limit[10];
-    printf("Number of Items: ");
-    if (fgets(limit, sizeof(limit), stdin) != NULL) {
-        limit[strlen(limit) - 1] = '\0';
-        if (strlen(limit) != 0) {
+    char* limit = readline("Number of Items: ");
+    if (limit != NULL) {
+        if (!is_valid_int(limit)) {
+            printf("!! Not a valid number !!\n");
+            free(limit);
+            return;
+        }
+        if (*limit) {
+            add_history(limit);
             char add_limit[20];
             snprintf(add_limit, sizeof(add_limit), " LIMIT %s", limit);
             strlcat(
                 sql_stmt, add_limit, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
         }
     }
+    free(limit);
 
     strlcat(sql_stmt, ";", sizeof(sql_stmt) - strlen(sql_stmt) - 1);
 
@@ -315,15 +340,14 @@ void date_today(char* date_buffer)
 
 void exec_categories(void)
 {
-    char cat_input[8];
-
+    char* cat_input;
+    const char* prompt
+        = "\n[A]dd categories   [V]iew categories   [R]ules   [M]ain menu\n> ";
     while (1) {
-        printf(
-            "\n[A]dd categories   [V]iew categories   [R]ules   [M]ain menu\n");
-        printf("> ");
-
-        if (fgets(cat_input, sizeof(cat_input), stdin) != NULL) {
-            cat_input[strlen(cat_input) - 1] = '\0';
+        if ((cat_input = readline(prompt)) != NULL) {
+            if (*cat_input) {
+                add_history(cat_input);
+            }
             if (strcmp(cat_input, "a") == 0 || strcmp(cat_input, "A") == 0) {
                 add_categories();
             } else if (strcmp(cat_input, "v") == 0
@@ -334,12 +358,14 @@ void exec_categories(void)
                 view_rules();
             } else if (strcmp(cat_input, "m") == 0
                 || strcmp(cat_input, "M") == 0) {
+                free(cat_input);
                 break;
             } else if (strcmp(cat_input, "exit") == 0
                 || strcmp(cat_input, "quit") == 0) {
                 exit(0);
             }
         }
+        free(cat_input);
     }
 }
 
@@ -425,10 +451,6 @@ void add_categories(void)
         exit(1);
     }
 
-    char payee[64];
-    char rule[64];
-    char category[64];
-
     printf("\n[[ Payee List ]]\n");
     // Fetch all payee in database
     int payee_items = print_items(&db, "payee");
@@ -439,23 +461,30 @@ void add_categories(void)
         printf("No items on payee list");
     }
 
-    printf("\n\nEnter number or new payee: ");
+    char* payee = readline("\n\nEnter number or new payee: ");
     int payee_id = 0;
-    if (fgets(payee, sizeof(payee), stdin) == NULL) {
-        printf("Not a valid response for payee\n");
-        return;
-    } else {
-        payee[strlen(payee) - 1] = '\0';
-        payee_id = add_item(&db, payee, "payee");
+    if (payee != NULL) {
+        if (*payee) {
+            add_history(payee);
+            payee_id = add_item(&db, payee, "payee");
+        }
     }
+    free(payee);
 
-    printf("Rule/Alias: ");
-    if (fgets(rule, sizeof(rule), stdin) == NULL) {
-        printf("!! Not a valid response for rules/aliases\n");
-        return;
-    } else {
-        rule[strlen(rule) - 1] = '\0';
+    char* rule = readline("Rule/Alias: ");
+    if (rule != NULL) {
+        if (*rule) {
+            add_history(rule);
+            char sql_rule[128];
+            snprintf(sql_rule, sizeof(sql_rule),
+                "INSERT INTO rules (rule_pattern, payee_id) VALUES "
+                "(\"%%%s%%\", %d);",
+                rule, payee_id);
+            sqlite3_exec(db, sql_rule, NULL, NULL, NULL);
+        }
     }
+    free(rule);
+
     printf("\n[[ Category List ]]\n");
     // Fetch all categories in database
     int cat_items = print_items(&db, "categories");
@@ -465,26 +494,16 @@ void add_categories(void)
     } else if (cat_items == 0) {
         printf("No items on category list");
     }
-    printf("\n\nEnter number or new category: ");
 
+    char* category = readline("\n\nEnter number or new category: ");
     int cat_id = 0;
-    if (fgets(category, sizeof(category), stdin) == NULL) {
-        printf("!! Not a valid response for categories\n");
-        return;
-    } else {
-        category[strlen(category) - 1] = '\0';
-        cat_id = add_item(&db, category, "categories");
+    if (category != NULL) {
+        if (*category) {
+            add_history(category);
+            cat_id = add_item(&db, category, "categories");
+        }
     }
-
-    // Add rules only if it's not empty
-    if (strlen(rule) > 0) {
-        char sql_rule[128];
-        snprintf(sql_rule, sizeof(sql_rule),
-            "INSERT INTO rules (rule_pattern, payee_id) VALUES (\"%%%s%%\", "
-            "%d);",
-            rule, payee_id);
-        sqlite3_exec(db, sql_rule, NULL, NULL, NULL);
-    }
+    free(category);
 
     // Update foreign key of payee
     char sql_payee[128];
