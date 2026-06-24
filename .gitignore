@@ -35,7 +35,7 @@
 *.i*86
 *.x86_64
 *.hex
-bin/*
+src/bin/*
 
 # Debug files
 *.dSYM/
@@ -59,7 +59,7 @@ dkms.conf
 *.db
 
 # personal data
-my_data/*
+src/my_data/*
 
 # temp file that test codes
 test.c
