@@ -63,3 +63,6 @@ src/my_data/*
 
 # temp file that test codes
 test.c
+
+# C format file
+.clang-format
