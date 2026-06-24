@@ -35,6 +35,8 @@
 *.i*86
 *.x86_64
 *.hex
+!*.*
+bin/*
 
 # Debug files
 *.dSYM/
@@ -53,3 +55,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# sqlite3 database
+*.db
+
+# personal data
+my_data/*
