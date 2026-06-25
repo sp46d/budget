@@ -93,6 +93,7 @@ void execute(const char* input)
     } else if (strcmp(input, "u") == 0 || strcmp(input, "U") == 0) {
         // refreshing tables means that it deletes all duplicate rows and
         // categorize transactions that have not yet been categorized.
+        printf("\n");
         delete_duplicates();
         update_categories();
     } else if (strcmp(input, "c") == 0 || strcmp(input, "C") == 0) {
@@ -104,7 +105,7 @@ void import_bank_stmt(void)
 {
     char* filename;
     const char* prompt
-        = "\n[M]ain menu\n[Enter file name]\n-----------------\n> ";
+        = "\n[Enter file name]\n[M]ain menu\n-----------------\n> ";
     while (1) {
         if ((filename = readline(prompt)) != NULL) {
             if (*filename) {
@@ -347,6 +348,7 @@ void add_date_filter(char* dst, char* source)
     char* datep = date_buffer;
     int year = atoi(strsep(&datep, "-"));
     int month = atoi(strsep(&datep, "-"));
+    int day = atoi(strsep(&datep, "\n"));
 
     char date_buf[128] = "";
     if (*source != '\0') {
@@ -357,18 +359,35 @@ void add_date_filter(char* dst, char* source)
             int from_month = month;
             int end_year = year;
             int end_month = month;
+            int from_day = 1;
+            int end_day = 31;
+
             if (strlen(from) <= 2) {
                 sscanf(from, "%d", &from_month);
                 sscanf(end, "%d", &end_month);
                 snprintf(date_buf, sizeof(date_buf),
                     " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
                     from_year, from_month, end_year, end_month);
-            } else {
-                sscanf(from, "%4d-%02d", &from_year, &from_month);
-                sscanf(end, "%4d-%02d", &end_year, &end_month);
+            } else if (strlen(from) > 2 && strlen(from) <= 5) {
+                sscanf(from, "%d-%d", &from_month, &from_day);
+                sscanf(end, "%d-%d", &end_month, &end_day);
+                snprintf(date_buf, sizeof(date_buf),
+                    " WHERE date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
+                    from_year, from_month, from_day, end_year, end_month,
+                    end_day);
+            } else if (strlen(from) > 6 && strlen(from) <= 7) {
+                sscanf(from, "%4d-%d", &from_year, &from_month);
+                sscanf(end, "%4d-%d", &end_year, &end_month);
                 snprintf(date_buf, sizeof(date_buf),
                     " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
                     from_year, from_month, end_year, end_month);
+            } else {
+                sscanf(from, "%4d-%d-%d", &from_year, &from_month, &from_day);
+                sscanf(end, "%4d-%d-%d", &end_year, &end_month, &end_day);
+                snprintf(date_buf, sizeof(date_buf),
+                    " WHERE date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
+                    from_year, from_month, from_day, end_year, end_month,
+                    end_day);
             }
         } else if (strlen(source) <= 2) {
             sscanf(source, "%d", &month);
@@ -379,10 +398,15 @@ void add_date_filter(char* dst, char* source)
             sscanf(source, "%4d", &year);
             snprintf(date_buf, sizeof(date_buf),
                 " WHERE date BETWEEN '%4d-01-01' AND '%4d-12-31'", year, year);
-        } else if (sscanf(source, "%4d-%02d", &year, &month)) {
+        } else if (strlen(source) > 4 && strlen(source) <= 7) {
+            sscanf(source, "%4d-%d", &year, &month);
             snprintf(date_buf, sizeof(date_buf),
                 " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
                 month, year, month);
+        } else if (strlen(source) > 7 && strlen(source) <= 10) {
+            sscanf(source, "%4d-%d-%d", &year, &month, &day);
+            snprintf(date_buf, sizeof(date_buf),
+                " WHERE date = '%4d-%02d-%02d'", year, month, day);
         }
     } else {
         snprintf(date_buf, sizeof(date_buf),
@@ -396,7 +420,7 @@ void add_cat_filter(char* dst, char* source)
 {
     if (*source) {
         char cat_buf[32];
-        snprintf(cat_buf, sizeof(cat_buf), " AND cat_id = %s", source);
+        snprintf(cat_buf, sizeof(cat_buf), " AND t.cat_id = %s", source);
         strlcat(dst, cat_buf, sizeof(dst) - strlen(dst) - 1);
     }
 }
@@ -425,9 +449,9 @@ void compose_sql_stmt(st_query* user_query)
 {
     char sql_stmt[1024]
         = "SELECT t.date AS date, t.amount AS amount, t.description AS "
-          "description, c.name AS category, t.cat_id AS cat_id "
-          "FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id = "
-          "c.id";
+          "description, c.name AS category, t.cat_id, p.name AS "
+          "payee FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id "
+          "= c.id LEFT OUTER JOIN payee p ON t.payee_id = p.id";
     add_date_filter(sql_stmt, user_query->date);
     add_cat_filter(sql_stmt, user_query->category);
     add_custom_filter(sql_stmt, user_query->custom);
@@ -508,12 +532,18 @@ void exec_categories(void)
             }
             if (strcmp(cat_input, "a") == 0 || strcmp(cat_input, "A") == 0) {
                 add_categories();
+                free(cat_input);
+                break;
             } else if (strcmp(cat_input, "v") == 0
                 || strcmp(cat_input, "V") == 0) {
                 view_categories();
+                free(cat_input);
+                break;
             } else if (strcmp(cat_input, "r") == 0
                 || strcmp(cat_input, "R") == 0) {
                 view_rules();
+                free(cat_input);
+                break;
             } else if (strcmp(cat_input, "m") == 0
                 || strcmp(cat_input, "M") == 0) {
                 free(cat_input);
