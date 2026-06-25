@@ -4,13 +4,13 @@
 // as is (apply awk parser on the way)
 // DONE: git the code and upload it to github
 // DONE: refactor the way it gets query from user
-// WORKING: Add more categories
 // DONE: Switch from fgets() to readline()
+// WORKING: Add more categories and rules
+// WORKING: Add monthly/yearly summary report
 // TODO: Clean up all functions and codes
 // TODO: Split codes into multiple files
 // TODO: When updating data, report the number of items affected (category,
 // duplicate)
-// TODO: Add monthly/yearly summary report
 // TODO: Find recurring payments and notify what payments are left and when is
 // due
 
@@ -39,6 +39,7 @@ typedef struct {
 void execute(const char* input);
 bool check_file(const char* buf);
 void import_csv(char* filename);
+void retrieve_or_report(void);
 void query_budget(void);
 void add_date_filter(char* dst, char* source);
 void add_cat_filter(char* dst, char* source);
@@ -88,7 +89,7 @@ void execute(const char* input)
     if (strcmp(input, "i") == 0 || strcmp(input, "I") == 0) {
         import_bank_stmt();
     } else if (strcmp(input, "r") == 0 || strcmp(input, "R") == 0) {
-        query_budget();
+        retrieve_or_report();
     } else if (strcmp(input, "u") == 0 || strcmp(input, "U") == 0) {
         // refreshing tables means that it deletes all duplicate rows and
         // categorize transactions that have not yet been categorized.
@@ -102,13 +103,19 @@ void execute(const char* input)
 void import_bank_stmt(void)
 {
     char* filename;
-    const char* prompt = "\nEnter file name or  [M]ain menu\n> ";
+    const char* prompt
+        = "\n[M]ain menu\n[Enter file name]\n-----------------\n> ";
     while (1) {
         if ((filename = readline(prompt)) != NULL) {
             if (*filename) {
                 add_history(filename);
             }
-            if (strcmp(filename, "m") == 0 || strcmp(filename, "M") == 0) {
+            if (strcmp(filename, "exit") == 0
+                || strcmp(filename, "quit") == 0) {
+                free(filename);
+                exit(0);
+            } else if (strcmp(filename, "m") == 0
+                || strcmp(filename, "M") == 0) {
                 free(filename);
                 break;
             } else if (check_file(filename)) {
@@ -220,6 +227,41 @@ void import_csv(char* filename)
     sqlite3_close(db);
     if (strcmp(csv_file, "tmp.csv") == 0) {
         remove("tmp.csv");
+    }
+}
+
+void retrieve_or_report(void)
+{
+    char* prompt = "\n[R]trieve records\n[S]ummary report\n[F]orecast report\n"
+                   "[M]ain menu\n-----------------\n> ";
+    while (1) {
+        char* input = readline(prompt);
+        if (input != NULL) {
+            if (*input) {
+                add_history(input);
+            }
+            if (strcmp(input, "exit") == 0 || strcmp(input, "quit") == 0) {
+                free(input);
+                exit(0);
+            } else if (strcmp(input, "r") == 0 || strcmp(input, "R") == 0) {
+                query_budget();
+                free(input);
+                break;
+            } else if (strcmp(input, "s") == 0 || strcmp(input, "S") == 0) {
+                // summary_budget();
+                printf("Summary report chosen!\n");
+                free(input);
+                break;
+            } else if (strcmp(input, "f") == 0 || strcmp(input, "F") == 0) {
+                printf("Forecast report chosen!\n");
+                free(input);
+                break;
+            } else if (strcmp(input, "m") == 0 || strcmp(input, "M") == 0) {
+                free(input);
+                break;
+            }
+        }
+        free(input);
     }
 }
 
@@ -457,8 +499,8 @@ void date_today(char* date_buffer)
 void exec_categories(void)
 {
     char* cat_input;
-    const char* prompt = "\n[A]dd categories   [V]iew categories   [R]ules "
-                         "  [M]ain menu\n> ";
+    const char* prompt = "\n[A]dd categories\n[V]iew categories\n[R]ules\n"
+                         "[M]ain menu\n-----------------\n> ";
     while (1) {
         if ((cat_input = readline(prompt)) != NULL) {
             if (*cat_input) {
