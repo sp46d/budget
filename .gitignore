@@ -66,3 +66,6 @@ test.c
 
 # C format file
 .clang-format
+
+# Temporary SQL query under testing
+*.sql
