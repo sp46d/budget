@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <readline/history.h>
 #include <readline/readline.h>
+#include <regex.h>
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,6 +37,7 @@ typedef struct {
     char limit[8];
 } st_query;
 
+bool validate_input(const char* input, const char* pattern);
 void execute(const char* input);
 bool check_file(const char* buf);
 void import_csv(char* filename);
@@ -84,6 +86,36 @@ int main(void)
         }
     }
     return 0;
+}
+
+bool validate_input(const char* input, const char* pattern)
+{
+    // copy input to buf for validation
+    char buf[128];
+    strlcpy(buf, input, sizeof(buf) - 1);
+    buf[strlen(buf)] = '\n';
+
+    regex_t regex;
+    int return_value;
+
+    return_value
+        = regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB | REG_NEWLINE);
+    if (return_value != 0) {
+        fprintf(stderr, "regcomp: can't compile regex pattern\n");
+        exit(1);
+    }
+    return_value = regexec(&regex, buf, 0, NULL, REG_NOTEOL);
+    regfree(&regex);
+    if (return_value == 0) {
+        // pattern matched!
+        return true;
+    } else if (return_value == REG_NOMATCH) {
+        // pattern not matched!
+        return false;
+    } else {
+        // something goes wrong
+        return false;
+    }
 }
 
 void execute(const char* input)
@@ -259,8 +291,8 @@ void retrieve_or_report(void)
                 free(input);
                 break;
             } else if (strcmp(input, "s") == 0 || strcmp(input, "S") == 0) {
-                printf("Summary report chosen!\n");
-                // summary_budget();
+                // printf("Summary report chosen!\n");
+                summary_budget();
                 free(input);
                 break;
             } else if (strcmp(input, "f") == 0 || strcmp(input, "F") == 0) {
@@ -336,30 +368,38 @@ void summary_budget(void)
 {
     st_query user_stmt;
     while (1) {
-        char* input = readline("Date for summary: ");
+        char* input = readline("\nEnter month or year for summary: ");
         if (input != NULL) {
             if (*input) {
                 add_history(input);
-                strlcpy(user_stmt.date, input, sizeof(user_stmt.date) - 1);
-                free(input);
-                break;
+                if (validate_input(input, "^[0-9]{4}-[0-9]{1,2}$")
+                    || validate_input(input, "^[0-9]{4}$")
+                    || validate_input(input, "^[0-9]{1,2}$")) {
+                    strlcpy(user_stmt.date, input, sizeof(user_stmt.date) - 1);
+                    free(input);
+                    break;
+                } else {
+                    printf("\n!! Not a valid input for summary !!\n");
+                }
             }
         }
         free(input);
     }
-    compose_summary_stmt(&user_stmt);
-    print_summary(&user_stmt);
+
+    // compose_summary_stmt(&user_stmt);
+    // print_summary(&user_stmt);
 }
 
 void compose_summary_stmt(st_query* user_stmt)
 {
     char sql_stmt[1024]
-        = "SELECT strftime('%Y-%m', t.date) AS new_date, sum(t.amount) AS "
+        = "SELECT strftime('%Y-%m', t.date) AS date_y_m, sum(t.amount) AS "
           "sum_amount, c.name as categories "
           "FROM transactions t JOIN categories c ON t.cat_id = c.id ";
-    char* more_stmt
-        = " AND t.cat_id != 0 GROUP BY new_date, t.cat_id ORDER BY new_date;";
     add_date_filter(sql_stmt, user_stmt->date);
+
+    char* more_stmt
+        = " AND t.cat_id != 0 GROUP BY date_y_m, t.cat_id ORDER BY date_y_m;";
     strlcat(sql_stmt, more_stmt, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
 
     strlcpy(user_stmt->sql_stmt, sql_stmt, sizeof(user_stmt->sql_stmt) - 1);
