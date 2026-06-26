@@ -29,9 +29,9 @@
 #define DB "budget.db"
 
 typedef struct {
-    char sql_stmt[512];
-    char custom[128];
-    char date[32];
+    char sql_stmt[1024];
+    char custom[256];
+    char date[64];
     char category[8];
     char limit[8];
 } st_query;
@@ -517,7 +517,7 @@ void add_limit_filter(char* dst, char* source)
 void add_custom_filter(char* dst, char* source)
 {
     if (*source) {
-        char custom_buf[32];
+        char custom_buf[256];
         snprintf(custom_buf, sizeof(custom_buf), " %s", source);
         strlcat(dst, custom_buf, sizeof(dst) - strlen(dst) - 1);
     }
@@ -673,7 +673,7 @@ static int print_items(sqlite3** db, const char* tablename)
         }
         int id = sqlite3_column_int(prepared_stmt, 0);
         const unsigned char* name = sqlite3_column_text(prepared_stmt, 1);
-        printf("[%d] = %-20s", id, name);
+        printf("[%02d] = %-20s  ", id, name);
         nitems++;
     }
     sqlite3_finalize(prepared_stmt);
