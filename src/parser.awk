@@ -24,8 +24,9 @@ $1 ~ /^[0-9]{2}\/[0-9]{2}\/[0-9]{4}/ {
     $6 = 0
     $7 = 0
     # output processed records
-    # date, description, description_n, amount, merchant, category
-    print $1, $2, $5, $3, $6, $7
+    # date, year, month, day, description, description_n, amount, payee_id, cat_id
+    printf("'%s',%d,%d,%d,'%s','%s',%0.2f,%d,%d\n",
+        $1, tmp[3], tmp[1], tmp[2], $2, $5, $3, $6, $7)
 }
 
 # Create an array of categories out of list files
