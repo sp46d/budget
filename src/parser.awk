@@ -1,6 +1,6 @@
 BEGIN {
     FS = "[ \t]{2,}"
-    OFS = ","
+    # OFS = ","  # No more needed. the results are now printed using printf
 }
 
 # skip header
