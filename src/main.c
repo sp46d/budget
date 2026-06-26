@@ -41,11 +41,14 @@ bool check_file(const char* buf);
 void import_csv(char* filename);
 void retrieve_or_report(void);
 void query_budget(void);
+void summary_budget(void);
 void add_date_filter(char* dst, char* source);
 void add_cat_filter(char* dst, char* source);
 void add_limit_filter(char* dst, char* source);
 void compose_sql_stmt(st_query* user_query);
+void compose_summary_stmt(st_query* user_stmt);
 void print_query(st_query* user_query);
+void print_summary(st_query* user_stmt);
 void delete_duplicates(void);
 void update_categories(void);
 void date_today(char* date_buffer);
@@ -189,9 +192,10 @@ void import_csv(char* filename)
 
     sqlite3_exec(db, "BEGIN TRANSACTION;", NULL, NULL, NULL);
 
-    const char* in_stmt = "INSERT INTO transactions (date, description, "
-                          "description_n, amount, payee_id, cat_id)"
-                          "VALUES (?, ?, ?, ?, ?, ?);";
+    const char* in_stmt
+        = "INSERT INTO transactions (date, year, month, day, "
+          "description, description_n, amount, payee_id, cat_id)"
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
 
     if (sqlite3_prepare_v2(db, in_stmt, -1, &out_stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "sqlite3_prepare error: %s\n", sqlite3_errmsg(db));
@@ -201,6 +205,9 @@ void import_csv(char* filename)
         row++;
         char* linep = line;
         char* date = strsep(&linep, ",");
+        char* year = strsep(&linep, ",");
+        char* month = strsep(&linep, ",");
+        char* day = strsep(&linep, ",");
         char* desc = strsep(&linep, ",");
         char* desc_n = strsep(&linep, ",");
         char* amount = strsep(&linep, ",");
@@ -208,11 +215,14 @@ void import_csv(char* filename)
         char* cat_id = strsep(&linep, "\n");
 
         sqlite3_bind_text(out_stmt, 1, date, -1, NULL);
-        sqlite3_bind_text(out_stmt, 2, desc, -1, NULL);
-        sqlite3_bind_text(out_stmt, 3, desc_n, -1, NULL);
-        sqlite3_bind_double(out_stmt, 4, atof(amount));
-        sqlite3_bind_int(out_stmt, 5, atoi(payee_id));
-        sqlite3_bind_int(out_stmt, 6, atoi(cat_id));
+        sqlite3_bind_int(out_stmt, 2, atoi(year));
+        sqlite3_bind_int(out_stmt, 3, atoi(month));
+        sqlite3_bind_int(out_stmt, 4, atoi(day));
+        sqlite3_bind_text(out_stmt, 5, desc, -1, NULL);
+        sqlite3_bind_text(out_stmt, 6, desc_n, -1, NULL);
+        sqlite3_bind_double(out_stmt, 7, atof(amount));
+        sqlite3_bind_int(out_stmt, 8, atoi(payee_id));
+        sqlite3_bind_int(out_stmt, 9, atoi(cat_id));
 
         if (sqlite3_step(out_stmt) != SQLITE_DONE) {
             fprintf(stderr, "import error in row %d: %s\n", row,
@@ -249,8 +259,8 @@ void retrieve_or_report(void)
                 free(input);
                 break;
             } else if (strcmp(input, "s") == 0 || strcmp(input, "S") == 0) {
-                // summary_budget();
                 printf("Summary report chosen!\n");
+                // summary_budget();
                 free(input);
                 break;
             } else if (strcmp(input, "f") == 0 || strcmp(input, "F") == 0) {
@@ -320,6 +330,74 @@ void query_budget(void)
     }
     compose_sql_stmt(&user_query);
     print_query(&user_query);
+}
+
+void summary_budget(void)
+{
+    st_query user_stmt;
+    while (1) {
+        char* input = readline("Date for summary: ");
+        if (input != NULL) {
+            if (*input) {
+                add_history(input);
+                strlcpy(user_stmt.date, input, sizeof(user_stmt.date) - 1);
+                free(input);
+                break;
+            }
+        }
+        free(input);
+    }
+    compose_summary_stmt(&user_stmt);
+    print_summary(&user_stmt);
+}
+
+void compose_summary_stmt(st_query* user_stmt)
+{
+    char sql_stmt[1024]
+        = "SELECT strftime('%Y-%m', t.date) AS new_date, sum(t.amount) AS "
+          "sum_amount, c.name as categories "
+          "FROM transactions t JOIN categories c ON t.cat_id = c.id ";
+    char* more_stmt
+        = " AND t.cat_id != 0 GROUP BY new_date, t.cat_id ORDER BY new_date;";
+    add_date_filter(sql_stmt, user_stmt->date);
+    strlcat(sql_stmt, more_stmt, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
+
+    strlcpy(user_stmt->sql_stmt, sql_stmt, sizeof(user_stmt->sql_stmt) - 1);
+}
+
+void print_summary(st_query* user_stmt)
+{
+    sqlite3* db;
+    if (sqlite3_open_v2(
+            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
+        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        exit(1);
+    }
+
+    const char* sql_stmt = (const char*)user_stmt->sql_stmt;
+    // printf("\n> SQL Statement: %s\n\n", sql_stmt);
+
+    sqlite3_stmt* prepared_stmt;
+    if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
+        != SQLITE_OK) {
+        fprintf(stderr, "sqlite3_prepare: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(prepared_stmt);
+        sqlite3_close(db);
+        exit(1);
+    }
+
+    printf("      CATEGORY     \n");
+    printf("-----------------------------------------------------\n");
+    while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
+        const unsigned char* date = sqlite3_column_text(prepared_stmt, 0);
+        float amount = (float)sqlite3_column_double(prepared_stmt, 1);
+        const unsigned char* category = sqlite3_column_text(prepared_stmt, 3);
+        const unsigned char* desc = sqlite3_column_text(prepared_stmt, 2);
+        printf("%s  %10.2f   %-14s   %s\n", date, amount, category, desc);
+    }
+    sqlite3_finalize(prepared_stmt);
+    sqlite3_close(db);
 }
 
 bool is_valid_int(const char* string)
