@@ -14,6 +14,7 @@
 // TODO: Find recurring payments and notify what payments are left and when is
 // due
 
+#include "record.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <readline/history.h>
@@ -28,6 +29,8 @@
 #include <unistd.h>
 
 #define DB "budget.db"
+#define TOTAL_SUMMARY_MONTHS 12
+#define TOTAL_SUMMARY_CATEGORIES 10
 
 typedef struct {
     char sql_stmt[1024];
@@ -97,7 +100,6 @@ bool validate_input(const char* input, const char* pattern)
 
     regex_t regex;
     int return_value;
-
     return_value
         = regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB | REG_NEWLINE);
     if (return_value != 0) {
@@ -337,7 +339,15 @@ void query_budget(void)
                 add_history(query);
             }
             if (i == 0) {
-                strlcpy(user_query.date, query, sizeof(user_query.date) - 1);
+                if (validate_input(query, "^[0-9-]{1,10}[,]?[ ]*[0-9-]{0,10}$")
+                    || *query == '\0') {
+                    strlcpy(
+                        user_query.date, query, sizeof(user_query.date) - 1);
+                } else {
+                    printf("\n!! Not a valid input for date !!\n");
+                    free(query);
+                    return;
+                }
             } else if (i == 1) {
                 if (!is_valid_int(query)) {
                     printf("!! Not a valid number !!\n");
@@ -385,24 +395,78 @@ void summary_budget(void)
         }
         free(input);
     }
-
-    // compose_summary_stmt(&user_stmt);
-    // print_summary(&user_stmt);
+    compose_summary_stmt(&user_stmt);
+    print_summary(&user_stmt);
 }
 
 void compose_summary_stmt(st_query* user_stmt)
 {
     char sql_stmt[1024]
-        = "SELECT strftime('%Y-%m', t.date) AS date_y_m, sum(t.amount) AS "
-          "sum_amount, c.name as categories "
-          "FROM transactions t JOIN categories c ON t.cat_id = c.id ";
+        = "SELECT strftime('%Y-%m', t.date) AS date_y_m, "
+          "sum(t.amount) AS amount, c.name as category "
+          "FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id =c.id "
+          "LEFT OUTER JOIN payee p ON t.payee_id = p.id ";
     add_date_filter(sql_stmt, user_stmt->date);
-
-    char* more_stmt
-        = " AND t.cat_id != 0 GROUP BY date_y_m, t.cat_id ORDER BY date_y_m;";
+    char* more_stmt = " AND t.cat_id != 0 AND p.name NOT LIKE 'mortgage' GROUP "
+                      "BY date_y_m, t.cat_id ORDER BY date_y_m, category;";
     strlcat(sql_stmt, more_stmt, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
 
     strlcpy(user_stmt->sql_stmt, sql_stmt, sizeof(user_stmt->sql_stmt) - 1);
+}
+
+void unique_months(record_t* tr_data, const char* months[], int n_months)
+{
+    int idx = 0;
+    for (record_t* recordp = tr_data; recordp; recordp = next_record(recordp)) {
+        if (get_id(recordp) == 0) {
+            continue;
+        }
+        const char* month = get_date(recordp);
+        bool exist = false;
+        for (int i = 0; i < idx; i++) {
+            if (strcmp(month, months[i]) == 0) {
+                exist = true;
+                break;
+            }
+        }
+        if (!exist) {
+            if (idx < n_months - 1) {
+                months[idx] = month;
+                idx++;
+            } else {
+                break;
+            }
+        }
+    }
+    months[idx] = NULL;
+}
+
+void unique_categories(record_t* tr_data, const char* cats[], int n_cats)
+{
+    int idx = 0;
+    for (record_t* recordp = tr_data; recordp != NULL;
+        recordp = next_record(recordp)) {
+        if (get_id(recordp) == 0) {
+            continue;
+        }
+        const char* cat = get_name(recordp);
+        bool exist = false;
+        for (int i = 0; i < idx; i++) {
+            if (strcmp(cat, cats[i]) == 0) {
+                exist = true;
+                break;
+            }
+        }
+        if (!exist) {
+            if (idx < n_cats - 1) {
+                cats[idx] = cat;
+                idx++;
+            } else {
+                break;
+            }
+        }
+    }
+    cats[idx] = NULL;
 }
 
 void print_summary(st_query* user_stmt)
@@ -414,7 +478,6 @@ void print_summary(st_query* user_stmt)
         sqlite3_close(db);
         exit(1);
     }
-
     const char* sql_stmt = (const char*)user_stmt->sql_stmt;
     // printf("\n> SQL Statement: %s\n\n", sql_stmt);
 
@@ -427,14 +490,53 @@ void print_summary(st_query* user_stmt)
         exit(1);
     }
 
-    printf("      CATEGORY     \n");
-    printf("-----------------------------------------------------\n");
+    // Fetch data
+    record_t* tr_data = record_init();
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
-        const unsigned char* date = sqlite3_column_text(prepared_stmt, 0);
+        const char* date = (const char*)sqlite3_column_text(prepared_stmt, 0);
         float amount = (float)sqlite3_column_double(prepared_stmt, 1);
-        const unsigned char* category = sqlite3_column_text(prepared_stmt, 3);
-        const unsigned char* desc = sqlite3_column_text(prepared_stmt, 2);
-        printf("%s  %10.2f   %-14s   %s\n", date, amount, category, desc);
+        const char* category
+            = (const char*)sqlite3_column_text(prepared_stmt, 2);
+        add_record(tr_data, date, category, amount);
+    }
+
+    // Get unique months and categories
+    const char* months[TOTAL_SUMMARY_MONTHS + 1];
+    const char* cats[TOTAL_SUMMARY_CATEGORIES + 1];
+    unique_months(tr_data, months, TOTAL_SUMMARY_MONTHS + 1);
+    unique_categories(tr_data, cats, TOTAL_SUMMARY_CATEGORIES + 1);
+
+    // Print result
+    int n_columns = 6;
+    bool lt_two_rows = false;
+    for (int row = 0; row < TOTAL_SUMMARY_MONTHS / n_columns; row++) {
+        char tb_ruler[512] = "-";
+        int row_idx = row * n_columns;
+        printf("       CATEGORY");
+        strlcat(tb_ruler, "---------------",
+            sizeof(tb_ruler) - strlen(tb_ruler) - 1);
+        for (int i = 0; i < n_columns; i++) {
+            if (!months[i]) {
+                lt_two_rows = true;
+                break;
+            }
+            printf("   %10s", months[row_idx + i]);
+            strlcat(tb_ruler, "-------------",
+                sizeof(tb_ruler) - strlen(tb_ruler) - 1);
+        }
+        printf("\n%s\n", tb_ruler);
+        for (int i = 0; cats[i]; i++) {
+            printf("%15s", cats[i]);
+            for (int j = 0; months[j] && j < n_columns; j++) {
+                printf("   %10.2f",
+                    lookup_amount(tr_data, months[row_idx + j], cats[i]));
+            }
+            printf("\n");
+        }
+        printf("%s\n", tb_ruler);
+        if (lt_two_rows) {
+            break;
+        }
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
@@ -484,52 +586,53 @@ void add_date_filter(char* dst, char* source)
                 sscanf(from, "%d", &from_month);
                 sscanf(end, "%d", &end_month);
                 snprintf(date_buf, sizeof(date_buf),
-                    " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
+                    " WHERE t.date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
                     from_year, from_month, end_year, end_month);
             } else if (strlen(from) > 2 && strlen(from) <= 5) {
                 sscanf(from, "%d-%d", &from_month, &from_day);
                 sscanf(end, "%d-%d", &end_month, &end_day);
                 snprintf(date_buf, sizeof(date_buf),
-                    " WHERE date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
+                    " WHERE t.date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
                     from_year, from_month, from_day, end_year, end_month,
                     end_day);
             } else if (strlen(from) > 6 && strlen(from) <= 7) {
                 sscanf(from, "%4d-%d", &from_year, &from_month);
                 sscanf(end, "%4d-%d", &end_year, &end_month);
                 snprintf(date_buf, sizeof(date_buf),
-                    " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
+                    " WHERE t.date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'",
                     from_year, from_month, end_year, end_month);
             } else {
                 sscanf(from, "%4d-%d-%d", &from_year, &from_month, &from_day);
                 sscanf(end, "%4d-%d-%d", &end_year, &end_month, &end_day);
                 snprintf(date_buf, sizeof(date_buf),
-                    " WHERE date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
+                    " WHERE t.date BETWEEN '%4d-%02d-%02d' AND '%4d-%02d-%02d'",
                     from_year, from_month, from_day, end_year, end_month,
                     end_day);
             }
         } else if (strlen(source) <= 2) {
             sscanf(source, "%d", &month);
             snprintf(date_buf, sizeof(date_buf),
-                " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
+                " WHERE t.date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
                 month, year, month);
         } else if (strlen(source) == 4) {
             sscanf(source, "%4d", &year);
             snprintf(date_buf, sizeof(date_buf),
-                " WHERE date BETWEEN '%4d-01-01' AND '%4d-12-31'", year, year);
+                " WHERE t.date BETWEEN '%4d-01-01' AND '%4d-12-31'", year,
+                year);
         } else if (strlen(source) > 4 && strlen(source) <= 7) {
             sscanf(source, "%4d-%d", &year, &month);
             snprintf(date_buf, sizeof(date_buf),
-                " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
+                " WHERE t.date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
                 month, year, month);
         } else if (strlen(source) > 7 && strlen(source) <= 10) {
             sscanf(source, "%4d-%d-%d", &year, &month, &day);
             snprintf(date_buf, sizeof(date_buf),
-                " WHERE date = '%4d-%02d-%02d'", year, month, day);
+                " WHERE t.date = '%4d-%02d-%02d'", year, month, day);
         }
     } else {
         snprintf(date_buf, sizeof(date_buf),
-            " WHERE date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year, month,
-            year, month);
+            " WHERE t.date BETWEEN '%4d-%02d-01' AND '%4d-%02d-31'", year,
+            month, year, month);
     }
     strlcat(dst, date_buf, sizeof(dst) - strlen(dst) - 1);
 }
@@ -565,16 +668,27 @@ void add_custom_filter(char* dst, char* source)
 
 void compose_sql_stmt(st_query* user_query)
 {
+
     char sql_stmt[1024]
-        = "SELECT t.date AS date, t.amount AS amount, t.description AS "
+        = "SELECT t.date, t.amount AS amount, t.description AS "
           "description, c.name AS category, t.cat_id, p.name AS "
           "payee FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id "
           "= c.id LEFT OUTER JOIN payee p ON t.payee_id = p.id";
+
+    // char sql_stmt[1024]
+    //     = "SELECT strftime( % Y - % m, t.date) AS date_y_m, "
+    //       "sum(t.amount) AS sum_amount, c.name as categories "
+    //       "FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id =
+    //       c.id " "LEFT OUTER JOIN payee p ON t.payee_id = p.id " "WHERE
+    //       t.cat_id != 0 AND date_y_m != '2024-12' " "AND date_y_m !=
+    //       '2026-05' " "AND p.name NOT LIKE 'mortgage' AND t.day > 20 "
+    //       "AND t.date BETWEEN '2026-02-01' AND '2026-04-30' "
+    //       "GROUP BY t.cat_id, date_y_m ORDER BY date_y_m, categories;";
     add_date_filter(sql_stmt, user_query->date);
     add_cat_filter(sql_stmt, user_query->category);
     add_custom_filter(sql_stmt, user_query->custom);
     if (!strstr(sql_stmt, "ORDER BY") && !strstr(sql_stmt, "order by")) {
-        strlcat(sql_stmt, " ORDER BY date",
+        strlcat(sql_stmt, " ORDER BY t.date",
             sizeof(sql_stmt) - strlen(sql_stmt) - 1);
     }
     add_limit_filter(sql_stmt, user_query->limit);
@@ -604,14 +718,20 @@ void print_query(st_query* user_query)
         exit(1);
     }
 
-    printf("DATE            AMOUNT   CATEGORY         DESCRIPTION\n");
-    printf("-----------------------------------------------------\n");
+    float sum_amount = 0.0;
+    printf("DATE             CATEGORY      AMOUNT   DESCRIPTION\n");
+    printf("---------------------------------------------------\n");
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
         const unsigned char* date = sqlite3_column_text(prepared_stmt, 0);
         float amount = (float)sqlite3_column_double(prepared_stmt, 1);
         const unsigned char* category = sqlite3_column_text(prepared_stmt, 3);
         const unsigned char* desc = sqlite3_column_text(prepared_stmt, 2);
-        printf("%s  %10.2f   %-14s   %s\n", date, amount, category, desc);
+        printf("%s %14s  %10.2f   %s\n", date, category, amount, desc);
+        sum_amount += amount;
+    }
+    if (*user_query->category) {
+        printf("-------------------------------------\n");
+        printf("                    TOTAL: %10.2f\n", sum_amount);
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
@@ -828,9 +948,34 @@ void view_categories(void)
         sqlite3_close(db);
         exit(1);
     }
-    const char* sql_stmt
-        = "SELECT c.name, p.name FROM categories c "
-          "JOIN payee p ON c.id = p.cat_id WHERE c.id != 0 ORDER BY c.id;";
+
+    printf("\n[[ Category List ]]\n");
+    // Fetch all categories in database
+    int cat_items = print_items(&db, "categories");
+    if (cat_items < 0) {
+        printf("!! Cannot fetch data from database: categories\n");
+        return;
+    } else if (cat_items == 0) {
+        printf("No items on category list");
+    }
+    char* cat_id;
+    while (1) {
+        cat_id = readline("\n\nCategory: ");
+        if (cat_id != NULL) {
+            if (*cat_id) {
+                add_history(cat_id);
+                free(cat_id);
+                break;
+            }
+        }
+        free(cat_id);
+    }
+
+    char sql_stmt[512];
+    snprintf(sql_stmt, sizeof(sql_stmt),
+        "SELECT p.id, c.name, p.name FROM categories c "
+        "JOIN payee p ON c.id = p.cat_id WHERE c.id = %s ORDER BY p.id;",
+        cat_id);
 
     sqlite3_stmt* prepared_stmt;
     if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
@@ -841,12 +986,13 @@ void view_categories(void)
         exit(1);
     }
     printf("\n");
-    printf("CATEGORY           PAYEE\n");
-    printf("------------------------\n");
+    printf("      CATEGORY   ID   PAYEE\n");
+    printf("      ---------------------\n");
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
-        const unsigned char* cat = sqlite3_column_text(prepared_stmt, 0);
-        const unsigned char* payee = sqlite3_column_text(prepared_stmt, 1);
-        printf("%-16s   %-16s\n", cat, payee);
+        int payee_id = sqlite3_column_int(prepared_stmt, 0);
+        const unsigned char* category = sqlite3_column_text(prepared_stmt, 1);
+        const unsigned char* payee = sqlite3_column_text(prepared_stmt, 2);
+        printf("%14s   %2d   %-16s\n", category, payee_id, payee);
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
@@ -874,13 +1020,13 @@ void view_rules(void)
         exit(1);
     }
     printf("\n");
-    printf("PAYEE              RULE PATTERN\n");
-    printf("-------------------------------\n");
+    printf("               PAYEE   RULE PATTERN\n");
+    printf("               --------------------\n");
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
         const unsigned char* payee = sqlite3_column_text(prepared_stmt, 0);
         const unsigned char* rule_pattern
             = sqlite3_column_text(prepared_stmt, 1);
-        printf("%-16s   %s\n", payee, rule_pattern);
+        printf("%20s   %s\n", payee, rule_pattern);
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
