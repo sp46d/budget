@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g record.c
 LDFLAGS = -lsqlite3 -lreadline
 
 %: %.c
