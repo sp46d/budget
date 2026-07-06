@@ -69,3 +69,6 @@ test.c
 
 # Temporary SQL query under testing
 *.sql
+
+# Emacs temporary files
+\#*.*\#
