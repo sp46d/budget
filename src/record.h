@@ -13,6 +13,8 @@ record_t* next_record(record_t* current_record);
 const char* get_date(record_t* current_record);
 const char* get_name(record_t* current_record);
 size_t get_id(record_t* current_record);
+double stdev_by_name(record_t* initial_record, const char* name);
+double average_by_name(record_t* initial_record, const char* name);
 void free_records(record_t* current_record);
 
 #endif
