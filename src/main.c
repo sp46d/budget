@@ -6,7 +6,7 @@
 // DONE: refactor the way it gets query from user
 // DONE: Switch from fgets() to readline()
 // WORKING: Add more categories and rules
-// WORKING: Add monthly/yearly summary report
+// DONE: Add monthly/yearly summary report
 // TODO: Clean up all functions and codes
 // TODO: Split codes into multiple files
 // TODO: When updating data, report the number of items affected (category,
@@ -29,14 +29,15 @@
 #include <unistd.h>
 
 #define DB "budget.db"
-#define TOTAL_SUMMARY_MONTHS 12
-#define TOTAL_SUMMARY_CATEGORIES 10
+#define TOTAL_MONTHS 24
+#define TOTAL_CATEGORIES 32
+#define SUMMARY_COLUMNS 6
 
 typedef struct {
     char sql_stmt[1024];
     char custom[256];
     char date[64];
-    char category[8];
+    int cat_id;
     char limit[8];
 } st_query;
 
@@ -46,12 +47,16 @@ bool check_file(const char* buf);
 void import_csv(char* filename);
 void retrieve_or_report(void);
 void query_budget(void);
-void summary_budget(void);
-void add_date_filter(char* dst, char* source);
-void add_cat_filter(char* dst, char* source);
-void add_limit_filter(char* dst, char* source);
+void summary_prompt(void);
+void summary_budget(int cat_id);
+void summary_by_payee(void);
+void add_date_filter(char* stmt, char* date);
+void add_cat_filter(char* stmt, int cat_id);
+void add_limit_filter(char* stmt, char* n_limits);
 void compose_sql_stmt(st_query* user_query);
 void compose_summary_stmt(st_query* user_stmt);
+int unique_months(record_t* tr_data, const char* months[], int n_months);
+int unique_names(record_t* tr_data, const char* names[], int len);
 void print_query(st_query* user_query);
 void print_summary(st_query* user_stmt);
 void delete_duplicates(void);
@@ -59,9 +64,9 @@ void update_categories(void);
 void date_today(char* date_buffer);
 void import_bank_stmt(void);
 void parse_txt(char* filename);
-void exec_categories(void);
+void category_prompt(void);
 void add_categories(void);
-void view_categories(void);
+void statistics_by_payee(void);
 void view_rules(void);
 bool is_valid_int(const char* string);
 static int get_id_callback(void* data, int argc, char** argv, char** azColName);
@@ -125,6 +130,8 @@ void execute(const char* input)
     // char buf[1024];
     if (strcmp(input, "i") == 0 || strcmp(input, "I") == 0) {
         import_bank_stmt();
+        delete_duplicates();
+        update_categories();
     } else if (strcmp(input, "r") == 0 || strcmp(input, "R") == 0) {
         retrieve_or_report();
     } else if (strcmp(input, "u") == 0 || strcmp(input, "U") == 0) {
@@ -134,7 +141,7 @@ void execute(const char* input)
         delete_duplicates();
         update_categories();
     } else if (strcmp(input, "c") == 0 || strcmp(input, "C") == 0) {
-        exec_categories();
+        category_prompt();
     }
 }
 
@@ -294,7 +301,7 @@ void retrieve_or_report(void)
                 break;
             } else if (strcmp(input, "s") == 0 || strcmp(input, "S") == 0) {
                 // printf("Summary report chosen!\n");
-                summary_budget();
+                summary_prompt();
                 free(input);
                 break;
             } else if (strcmp(input, "f") == 0 || strcmp(input, "F") == 0) {
@@ -354,8 +361,7 @@ void query_budget(void)
                     free(query);
                     return;
                 }
-                strlcpy(user_query.category, query,
-                    sizeof(user_query.category) - 1);
+                user_query.cat_id = atoi(query);
             } else if (i == 2) {
                 if (!is_valid_int(query)) {
                     printf("!! Not a valid number !!\n");
@@ -374,9 +380,68 @@ void query_budget(void)
     print_query(&user_query);
 }
 
-void summary_budget(void)
+void summary_prompt(void)
+{
+    char* prompt
+        = "\nBy [C]ategory  or  [P]ayee\n--------------------------\n> ";
+    while (1) {
+        char* input = readline(prompt);
+        if (input != NULL) {
+            if (*input) {
+                add_history(input);
+            }
+            if (strcmp(input, "c") == 0 || strcmp(input, "C") == 0) {
+                summary_budget(-1);
+                free(input);
+                break;
+            }
+            if (strcmp(input, "p") == 0 || strcmp(input, "P") == 0) {
+                summary_by_payee();
+                free(input);
+                break;
+            }
+        }
+        free(input);
+    }
+}
+
+void summary_by_payee(void)
+{
+    sqlite3* db;
+    if (sqlite3_open_v2(
+            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
+        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        exit(1);
+    }
+    printf("\n[[ Category List ]]\n");
+    int cat_items = print_items(&db, "categories");
+    if (cat_items < 0) {
+        printf("!! Cannot fetch data from database: categories !!\n");
+        return;
+    } else if (cat_items == 0) {
+        printf("No items on category list");
+    }
+    sqlite3_close(db);
+
+    while (1) {
+        char* input = readline("\n\nCategory (number): ");
+        if (input != NULL) {
+            if (*input) {
+                add_history(input);
+                summary_budget(atoi(input));
+                free(input);
+                break;
+            }
+        }
+        free(input);
+    }
+}
+
+void summary_budget(int cat_id)
 {
     st_query user_stmt;
+    user_stmt.cat_id = cat_id;
     while (1) {
         char* input = readline("\nEnter month or year for summary: ");
         if (input != NULL) {
@@ -384,7 +449,10 @@ void summary_budget(void)
                 add_history(input);
                 if (validate_input(input, "^[0-9]{4}-[0-9]{1,2}$")
                     || validate_input(input, "^[0-9]{4}$")
-                    || validate_input(input, "^[0-9]{1,2}$")) {
+                    || validate_input(input, "^[0-9]{1,2}$")
+                    || validate_input(input, "^[0-9]{1,2}[,][0-9]{1,2}$")
+                    || validate_input(
+                        input, "^[0-9]{4}-[0-9]{1,2}[,][0-9]{4}-[0-9]{1,2}$")) {
                     strlcpy(user_stmt.date, input, sizeof(user_stmt.date) - 1);
                     free(input);
                     break;
@@ -403,21 +471,32 @@ void compose_summary_stmt(st_query* user_stmt)
 {
     char sql_stmt[1024]
         = "SELECT strftime('%Y-%m', t.date) AS date_y_m, "
-          "sum(t.amount) AS amount, c.name as category "
+          "sum(t.amount) AS amount, c.name as category, p.name "
           "FROM transactions t LEFT OUTER JOIN categories c ON t.cat_id =c.id "
           "LEFT OUTER JOIN payee p ON t.payee_id = p.id ";
     add_date_filter(sql_stmt, user_stmt->date);
-    char* more_stmt = " AND t.cat_id != 0 AND p.name NOT LIKE 'mortgage' GROUP "
-                      "BY date_y_m, t.cat_id ORDER BY date_y_m, category;";
-    strlcat(sql_stmt, more_stmt, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
 
+    if (user_stmt->cat_id > 0) {
+        char more_stmt[256];
+        snprintf(more_stmt, sizeof(more_stmt),
+            " AND t.cat_id = %d AND p.name NOT LIKE 'mortgage' GROUP BY "
+            "date_y_m, p.id ORDER BY date_y_m, p.id;",
+            user_stmt->cat_id);
+        strlcat(sql_stmt, more_stmt, sizeof(sql_stmt) - strlen(sql_stmt) - 1);
+    } else {
+        strlcat(sql_stmt,
+            " AND t.cat_id != 0 AND p.name NOT LIKE 'mortgage' GROUP BY "
+            "date_y_m, category ORDER BY date_y_m, category;",
+            sizeof(sql_stmt) - strlen(sql_stmt) - 1);
+    }
     strlcpy(user_stmt->sql_stmt, sql_stmt, sizeof(user_stmt->sql_stmt) - 1);
 }
 
-void unique_months(record_t* tr_data, const char* months[], int n_months)
+int unique_months(record_t* tr_data, const char* months[], int n_months)
 {
     int idx = 0;
-    for (record_t* recordp = tr_data; recordp; recordp = next_record(recordp)) {
+    for (record_t* recordp = tr_data; recordp != NULL;
+        recordp = next_record(recordp)) {
         if (get_id(recordp) == 0) {
             continue;
         }
@@ -439,9 +518,10 @@ void unique_months(record_t* tr_data, const char* months[], int n_months)
         }
     }
     months[idx] = NULL;
+    return idx;
 }
 
-void unique_categories(record_t* tr_data, const char* cats[], int n_cats)
+int unique_names(record_t* tr_data, const char* names[], int len)
 {
     int idx = 0;
     for (record_t* recordp = tr_data; recordp != NULL;
@@ -449,28 +529,30 @@ void unique_categories(record_t* tr_data, const char* cats[], int n_cats)
         if (get_id(recordp) == 0) {
             continue;
         }
-        const char* cat = get_name(recordp);
+        const char* name = get_name(recordp);
         bool exist = false;
         for (int i = 0; i < idx; i++) {
-            if (strcmp(cat, cats[i]) == 0) {
+            if (strcmp(name, names[i]) == 0) {
                 exist = true;
                 break;
             }
         }
         if (!exist) {
-            if (idx < n_cats - 1) {
-                cats[idx] = cat;
+            if (idx < len - 1) {
+                names[idx] = name;
                 idx++;
             } else {
                 break;
             }
         }
     }
-    cats[idx] = NULL;
+    names[idx] = NULL;
+    return idx;
 }
 
 void print_summary(st_query* user_stmt)
 {
+    bool by_payee = user_stmt->cat_id > 0;
     sqlite3* db;
     if (sqlite3_open_v2(
             DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
@@ -492,51 +574,61 @@ void print_summary(st_query* user_stmt)
 
     // Fetch data
     record_t* tr_data = record_init();
+    char header_cat[128];
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
         const char* date = (const char*)sqlite3_column_text(prepared_stmt, 0);
         float amount = (float)sqlite3_column_double(prepared_stmt, 1);
         const char* category
             = (const char*)sqlite3_column_text(prepared_stmt, 2);
-        add_record(tr_data, date, category, amount);
+        const char* payee = (const char*)sqlite3_column_text(prepared_stmt, 3);
+        if (by_payee) {
+            add_record(tr_data, date, payee, amount);
+            snprintf(header_cat, sizeof(header_cat), "%s", category);
+        } else {
+            add_record(tr_data, date, category, amount);
+            snprintf(header_cat, sizeof(header_cat), "CATEGORY");
+        }
     }
 
     // Get unique months and categories
-    const char* months[TOTAL_SUMMARY_MONTHS + 1];
-    const char* cats[TOTAL_SUMMARY_CATEGORIES + 1];
-    unique_months(tr_data, months, TOTAL_SUMMARY_MONTHS + 1);
-    unique_categories(tr_data, cats, TOTAL_SUMMARY_CATEGORIES + 1);
+    const char* months[TOTAL_MONTHS + 1];
+    const char* names[TOTAL_CATEGORIES + 1];
+    int nmonths = unique_months(tr_data, months, TOTAL_MONTHS + 1);
+    unique_names(tr_data, names, TOTAL_CATEGORIES + 1);
 
     // Print result
-    int n_columns = 6;
-    bool lt_two_rows = false;
-    for (int row = 0; row < TOTAL_SUMMARY_MONTHS / n_columns; row++) {
-        char tb_ruler[512] = "-";
-        int row_idx = row * n_columns;
-        printf("       CATEGORY");
-        strlcat(tb_ruler, "---------------",
-            sizeof(tb_ruler) - strlen(tb_ruler) - 1);
-        for (int i = 0; i < n_columns; i++) {
-            if (!months[i]) {
-                lt_two_rows = true;
-                break;
-            }
+    for (int row = 0; row < (nmonths + SUMMARY_COLUMNS - 1) / SUMMARY_COLUMNS;
+        row++) {
+        float sum[SUMMARY_COLUMNS] = { 0.0f };
+        char tb_hline[512] = "-";
+        int row_idx = row * SUMMARY_COLUMNS;
+        printf("\n%20s", header_cat);
+        strlcat(tb_hline, "--------------------",
+            sizeof(tb_hline) - strlen(tb_hline) - 1);
+        for (int i = 0; months[row_idx + i] && i < SUMMARY_COLUMNS; i++) {
             printf("   %10s", months[row_idx + i]);
-            strlcat(tb_ruler, "-------------",
-                sizeof(tb_ruler) - strlen(tb_ruler) - 1);
+            strlcat(tb_hline, "-------------",
+                sizeof(tb_hline) - strlen(tb_hline) - 1);
         }
-        printf("\n%s\n", tb_ruler);
-        for (int i = 0; cats[i]; i++) {
-            printf("%15s", cats[i]);
-            for (int j = 0; months[j] && j < n_columns; j++) {
-                printf("   %10.2f",
-                    lookup_amount(tr_data, months[row_idx + j], cats[i]));
+        printf("\n%s\n", tb_hline);
+
+        int j;
+        for (int i = 0; names[i]; i++) {
+            printf("%20s", names[i]);
+            for (j = 0; months[row_idx + j] && j < SUMMARY_COLUMNS; j++) {
+                float amount
+                    = lookup_amount(tr_data, months[row_idx + j], names[i]);
+                printf("   %10.2f", amount);
+                sum[j] += amount;
             }
             printf("\n");
         }
-        printf("%s\n", tb_ruler);
-        if (lt_two_rows) {
-            break;
+        printf("%s\n", tb_hline);
+        printf("%20s", "TOTAL");
+        for (int i = 0; i < j; i++) {
+            printf("   %10.2f", sum[i]);
         }
+        printf("\n%s\n", tb_hline);
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
@@ -637,11 +729,11 @@ void add_date_filter(char* dst, char* source)
     strlcat(dst, date_buf, sizeof(dst) - strlen(dst) - 1);
 }
 
-void add_cat_filter(char* dst, char* source)
+void add_cat_filter(char* dst, int cat_id)
 {
-    if (*source) {
+    if (cat_id >= 0) {
         char cat_buf[32];
-        snprintf(cat_buf, sizeof(cat_buf), " AND t.cat_id = %s", source);
+        snprintf(cat_buf, sizeof(cat_buf), " AND t.cat_id = %d", cat_id);
         strlcat(dst, cat_buf, sizeof(dst) - strlen(dst) - 1);
     }
 }
@@ -685,7 +777,7 @@ void compose_sql_stmt(st_query* user_query)
     //       "AND t.date BETWEEN '2026-02-01' AND '2026-04-30' "
     //       "GROUP BY t.cat_id, date_y_m ORDER BY date_y_m, categories;";
     add_date_filter(sql_stmt, user_query->date);
-    add_cat_filter(sql_stmt, user_query->category);
+    add_cat_filter(sql_stmt, user_query->cat_id);
     add_custom_filter(sql_stmt, user_query->custom);
     if (!strstr(sql_stmt, "ORDER BY") && !strstr(sql_stmt, "order by")) {
         strlcat(sql_stmt, " ORDER BY t.date",
@@ -707,7 +799,7 @@ void print_query(st_query* user_query)
     }
 
     const char* sql_stmt = (const char*)user_query->sql_stmt;
-    printf("\n> SQL Statement: %s\n\n", sql_stmt);
+    // printf("\n> SQL Statement: %s\n\n", sql_stmt);
 
     sqlite3_stmt* prepared_stmt;
     if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
@@ -729,7 +821,7 @@ void print_query(st_query* user_query)
         printf("%s %14s  %10.2f   %s\n", date, category, amount, desc);
         sum_amount += amount;
     }
-    if (*user_query->category) {
+    if (user_query->cat_id > 0) {
         printf("-------------------------------------\n");
         printf("                    TOTAL: %10.2f\n", sum_amount);
     }
@@ -758,11 +850,11 @@ void date_today(char* date_buffer)
     strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", local_time);
 }
 
-void exec_categories(void)
+void category_prompt(void)
 {
     char* cat_input;
-    const char* prompt = "\n[A]dd categories\n[V]iew categories\n[R]ules\n"
-                         "[M]ain menu\n-----------------\n> ";
+    const char* prompt = "\n[A]dd categories\n[S]tatistics\n[R]ules\n"
+                         "[M]ain menu\n----------------\n> ";
     while (1) {
         if ((cat_input = readline(prompt)) != NULL) {
             if (*cat_input) {
@@ -772,9 +864,9 @@ void exec_categories(void)
                 add_categories();
                 free(cat_input);
                 break;
-            } else if (strcmp(cat_input, "v") == 0
-                || strcmp(cat_input, "V") == 0) {
-                view_categories();
+            } else if (strcmp(cat_input, "s") == 0
+                || strcmp(cat_input, "S") == 0) {
+                statistics_by_payee();
                 free(cat_input);
                 break;
             } else if (strcmp(cat_input, "r") == 0
@@ -939,7 +1031,34 @@ void add_categories(void)
     sqlite3_close(db);
 }
 
-void view_categories(void)
+int print_list_with_id(int list_idx)
+{
+    // list_idx = 0: category
+    // list_idx = 1: payee
+    const char* tb_names[2] = { "categories", "payee" };
+    const char* list_names[2] = { "Category List", "Payee List" };
+
+    sqlite3* db;
+    if (sqlite3_open_v2(
+            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
+        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
+        sqlite3_close(db);
+        exit(1);
+    }
+
+    printf("\n[[ %s ]]\n", list_names[list_idx]);
+    // Fetch all categories in database
+    int nitems = print_items(&db, tb_names[list_idx]);
+    if (nitems < 0) {
+        printf("!! Cannot fetch data from database: %s\n", tb_names[list_idx]);
+        return -1;
+    } else if (nitems == 0) {
+        printf("No items on category list");
+    }
+    return nitems;
+}
+
+void statistics_by_payee(void)
 {
     sqlite3* db;
     if (sqlite3_open_v2(
@@ -964,7 +1083,6 @@ void view_categories(void)
         if (cat_id != NULL) {
             if (*cat_id) {
                 add_history(cat_id);
-                free(cat_id);
                 break;
             }
         }
@@ -977,6 +1095,9 @@ void view_categories(void)
         "JOIN payee p ON c.id = p.cat_id WHERE c.id = %s ORDER BY p.id;",
         cat_id);
 
+    free(cat_id);
+
+    // printf(">> SQL statement: %s\n", sql_stmt);
     sqlite3_stmt* prepared_stmt;
     if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
         != SQLITE_OK) {
