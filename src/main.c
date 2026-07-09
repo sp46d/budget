@@ -72,7 +72,6 @@ void print_query(st_query* user_query);
 void print_summary(st_query* user_stmt);
 void delete_duplicates(void);
 void update_categories(void);
-void date_today(char* date_buffer);
 int get_today_date(date_type type);
 void import_bank_stmt(void);
 void parse_txt(char* filename);
@@ -857,17 +856,13 @@ void delete_duplicates(void)
     printf(">> All duplicate records have been successfully removed\n");
 }
 
-void date_today(char* date_buffer)
-{
-    time_t raw_time = time(NULL);
-    struct tm* local_time = localtime(&raw_time);
-    strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", local_time);
-}
-
 int get_today_date(date_type type)
 {
     char date_buffer[50];
-    date_today(date_buffer);
+    time_t raw_time = time(NULL);
+    struct tm* local_time = localtime(&raw_time);
+    strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", local_time);
+
     char* date_ptr = date_buffer;
     int today_date[3];
     today_date[YEAR] = atoi(strsep(&date_ptr, "-"));
@@ -1124,12 +1119,10 @@ void print_statistics(void)
 
     char sql_stmt[512];
     snprintf(sql_stmt, sizeof(sql_stmt),
-        "SELECT c.name, p.name, sum(t.amount) AS amount, "
-        "strftime('%%Y-%%m', t.date) AS date_y_m FROM transactions t LEFT "
-        "OUTER JOIN categories c ON t.cat_id = c.id LEFT OUTER JOIN payee p ON "
-        "t.payee_id "
-        "= p.id WHERE t.date BETWEEN '2025-01-01' AND '%d-%02d-31' AND c.id = "
-        "%s GROUP BY "
+        "SELECT c.name, p.name, sum(t.amount) AS amount, strftime('%%Y-%%m', "
+        "t.date) AS date_y_m FROM transactions t LEFT OUTER JOIN categories c "
+        "ON t.cat_id = c.id LEFT OUTER JOIN payee p ON t.payee_id = p.id WHERE "
+        "t.date BETWEEN '2025-01-01' AND '%d-%02d-31' AND c.id = %s GROUP BY "
         "date_y_m, p.id ORDER BY date_y_m, p.id;",
         year, month - 1, cat_id);
 
@@ -1159,6 +1152,7 @@ void print_statistics(void)
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
+
     printf("\n");
     printf("       CATEGORY   ITEMS                       MEAN        STDEV\n");
     printf("---------------------------------------------------------------\n");
