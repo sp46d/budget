@@ -30,7 +30,7 @@
 
 #define DB "budget.db"
 #define TOTAL_MONTHS 24
-#define TOTAL_CATEGORIES 32
+#define TOTAL_CATEGORIES 128
 #define SUMMARY_COLUMNS 6
 
 typedef struct {
@@ -40,6 +40,17 @@ typedef struct {
     int cat_id;
     char limit[8];
 } st_query;
+
+typedef enum {
+    MEAN,
+    STDEV,
+} stat_type;
+
+typedef enum {
+    YEAR,
+    MONTH,
+    DAY,
+} date_type;
 
 bool validate_input(const char* input, const char* pattern);
 void execute(const char* input);
@@ -62,11 +73,14 @@ void print_summary(st_query* user_stmt);
 void delete_duplicates(void);
 void update_categories(void);
 void date_today(char* date_buffer);
+int get_today_date(date_type type);
 void import_bank_stmt(void);
 void parse_txt(char* filename);
 void category_prompt(void);
 void add_categories(void);
-void statistics_by_payee(void);
+int print_list_with_id(sqlite3** db, int list_idx);
+record_t* get_statistics(record_t* tr_data, stat_type type);
+void print_statistics(void);
 void view_rules(void);
 bool is_valid_int(const char* string);
 static int get_id_callback(void* data, int argc, char** argv, char** azColName);
@@ -653,14 +667,14 @@ bool is_valid_int(const char* string)
 void add_date_filter(char* dst, char* source)
 {
     // Get today's date
-    char date_buffer[50];
-    date_today(date_buffer);
-
-    // get current year and current month for deafult value
-    char* datep = date_buffer;
-    int year = atoi(strsep(&datep, "-"));
-    int month = atoi(strsep(&datep, "-"));
-    int day = atoi(strsep(&datep, "\n"));
+    // char date_buffer[50];
+    // date_today(date_buffer);
+    //
+    // // get current year and current month for deafult value
+    // char* datep = date_buffer;
+    int year = get_today_date(YEAR);
+    int month = get_today_date(MONTH);
+    int day = get_today_date(DAY);
 
     char date_buf[128] = "";
     if (*source != '\0') {
@@ -850,6 +864,18 @@ void date_today(char* date_buffer)
     strftime(date_buffer, sizeof(date_buffer), "%Y-%m-%d", local_time);
 }
 
+int get_today_date(date_type type)
+{
+    char date_buffer[50];
+    date_today(date_buffer);
+    char* date_ptr = date_buffer;
+    int today_date[3];
+    today_date[YEAR] = atoi(strsep(&date_ptr, "-"));
+    today_date[MONTH] = atoi(strsep(&date_ptr, "-"));
+    today_date[DAY] = atoi(strsep(&date_ptr, "-"));
+    return today_date[type];
+}
+
 void category_prompt(void)
 {
     char* cat_input;
@@ -866,7 +892,7 @@ void category_prompt(void)
                 break;
             } else if (strcmp(cat_input, "s") == 0
                 || strcmp(cat_input, "S") == 0) {
-                statistics_by_payee();
+                print_statistics();
                 free(cat_input);
                 break;
             } else if (strcmp(cat_input, "r") == 0
@@ -1031,34 +1057,46 @@ void add_categories(void)
     sqlite3_close(db);
 }
 
-int print_list_with_id(int list_idx)
+int print_list_with_id(sqlite3** db, int list_idx)
 {
     // list_idx = 0: category
     // list_idx = 1: payee
     const char* tb_names[2] = { "categories", "payee" };
     const char* list_names[2] = { "Category List", "Payee List" };
 
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
-
     printf("\n[[ %s ]]\n", list_names[list_idx]);
     // Fetch all categories in database
-    int nitems = print_items(&db, tb_names[list_idx]);
+    int nitems = print_items(db, tb_names[list_idx]);
     if (nitems < 0) {
         printf("!! Cannot fetch data from database: %s\n", tb_names[list_idx]);
         return -1;
     } else if (nitems == 0) {
-        printf("No items on category list");
+        printf("No items on %s", list_names[list_idx]);
     }
     return nitems;
 }
 
-void statistics_by_payee(void)
+record_t* get_statistics(record_t* tr_data, stat_type type)
+{
+    const char* names[TOTAL_CATEGORIES];
+    unique_names(tr_data, names, TOTAL_CATEGORIES);
+
+    record_t* payee_stats = record_init();
+    if (type == MEAN) {
+        for (int i = 0; names[i]; i++) {
+            add_record(payee_stats, NULL, names[i],
+                (float)average_by_name(tr_data, names[i]));
+        }
+    } else if (type == STDEV) {
+        for (int i = 0; names[i]; i++) {
+            add_record(payee_stats, NULL, names[i],
+                (float)stdev_by_name(tr_data, names[i]));
+        }
+    }
+    return payee_stats;
+}
+
+void print_statistics(void)
 {
     sqlite3* db;
     if (sqlite3_open_v2(
@@ -1067,16 +1105,7 @@ void statistics_by_payee(void)
         sqlite3_close(db);
         exit(1);
     }
-
-    printf("\n[[ Category List ]]\n");
-    // Fetch all categories in database
-    int cat_items = print_items(&db, "categories");
-    if (cat_items < 0) {
-        printf("!! Cannot fetch data from database: categories\n");
-        return;
-    } else if (cat_items == 0) {
-        printf("No items on category list");
-    }
+    print_list_with_id(&db, 0);
     char* cat_id;
     while (1) {
         cat_id = readline("\n\nCategory: ");
@@ -1089,14 +1118,24 @@ void statistics_by_payee(void)
         free(cat_id);
     }
 
+    int year = get_today_date(YEAR);
+    int month = get_today_date(MONTH);
+    // int day = get_today_date(DAY);
+
     char sql_stmt[512];
     snprintf(sql_stmt, sizeof(sql_stmt),
-        "SELECT p.id, c.name, p.name FROM categories c "
-        "JOIN payee p ON c.id = p.cat_id WHERE c.id = %s ORDER BY p.id;",
-        cat_id);
+        "SELECT c.name, p.name, sum(t.amount) AS amount, "
+        "strftime('%%Y-%%m', t.date) AS date_y_m FROM transactions t LEFT "
+        "OUTER JOIN categories c ON t.cat_id = c.id LEFT OUTER JOIN payee p ON "
+        "t.payee_id "
+        "= p.id WHERE t.date BETWEEN '2025-01-01' AND '%d-%02d-31' AND c.id = "
+        "%s GROUP BY "
+        "date_y_m, p.id ORDER BY date_y_m, p.id;",
+        year, month - 1, cat_id);
 
     free(cat_id);
 
+    printf(">> SQL statement: %s\n", sql_stmt);
     // printf(">> SQL statement: %s\n", sql_stmt);
     sqlite3_stmt* prepared_stmt;
     if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
@@ -1106,17 +1145,33 @@ void statistics_by_payee(void)
         sqlite3_close(db);
         exit(1);
     }
-    printf("\n");
-    printf("      CATEGORY   ID   PAYEE\n");
-    printf("      ---------------------\n");
+    char cat_name[32];
+    record_t* tr_data = record_init();
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
-        int payee_id = sqlite3_column_int(prepared_stmt, 0);
-        const unsigned char* category = sqlite3_column_text(prepared_stmt, 1);
-        const unsigned char* payee = sqlite3_column_text(prepared_stmt, 2);
-        printf("%14s   %2d   %-16s\n", category, payee_id, payee);
+        // int payee_id = sqlite3_column_int(prepared_stmt, 0);
+        const char* category
+            = (const char*)sqlite3_column_text(prepared_stmt, 0);
+        const char* payee = (const char*)sqlite3_column_text(prepared_stmt, 1);
+        float amount = (float)sqlite3_column_double(prepared_stmt, 2);
+        const char* date = (const char*)sqlite3_column_text(prepared_stmt, 3);
+        add_record(tr_data, date, payee, amount);
+        strlcpy(cat_name, category, sizeof(cat_name) - 1);
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
+    printf("\n");
+    printf("       CATEGORY   ITEMS                       MEAN        STDEV\n");
+    printf("---------------------------------------------------------------\n");
+    const char* items[TOTAL_CATEGORIES];
+    unique_names(tr_data, items, TOTAL_CATEGORIES);
+    record_t* mean_by_item = get_statistics(tr_data, MEAN);
+    record_t* stdev_by_item = get_statistics(tr_data, STDEV);
+    for (int i = 0; items[i]; i++) {
+        printf("%15s   ", cat_name);
+        printf("%-20s  ", items[i]);
+        printf("%10.2f   ", lookup_amount(mean_by_item, "", items[i]));
+        printf("%10.2f\n", lookup_amount(stdev_by_item, "", items[i]));
+    }
 }
 
 void view_rules(void)
