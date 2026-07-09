@@ -32,7 +32,8 @@ void add_record(
     record_t* initial_record, const char* date, const char* name, float amount)
 {
     record_t* current_data = malloc(sizeof(record_t));
-    strlcpy(current_data->date, date, sizeof(current_data->date) - 1);
+    strlcpy(
+        current_data->date, date ? date : "", sizeof(current_data->date) - 1);
     strlcpy(current_data->name, name, sizeof(current_data->name) - 1);
     current_data->amount = amount;
     current_data->next = NULL;
@@ -50,7 +51,10 @@ float lookup_amount(
         if (get_id(recordp) == 0) {
             continue;
         }
-        if (strcmp(get_date(recordp), date) == 0
+        if (!*date && strcmp(get_name(recordp), name) == 0) {
+            result = recordp->amount;
+            break;
+        } else if (strcmp(get_date(recordp), date) == 0
             && strcmp(get_name(recordp), name) == 0) {
             result = recordp->amount;
             break;
@@ -98,6 +102,9 @@ double average_by_name(record_t* initial_record, const char* name)
     double sum = 0.0;
     int n = 0;
     for (record_t* recordp = initial_record; recordp; recordp = recordp->next) {
+        if (get_id(recordp) == 0) {
+            continue;
+        }
         if (strcmp(get_name(recordp), name) == 0) {
             sum += recordp->amount;
             n++;
@@ -112,6 +119,9 @@ double stdev_by_name(record_t* initial_record, const char* name)
     double variance_sum = 0.0;
     int n = 0;
     for (record_t* recordp = initial_record; recordp; recordp = recordp->next) {
+        if (get_id(recordp) == 0) {
+            continue;
+        }
         if (strcmp(get_name(recordp), name) == 0) {
             variance_sum += pow(recordp->amount - mean, 2);
             n++;
