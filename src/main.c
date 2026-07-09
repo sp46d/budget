@@ -53,9 +53,10 @@ typedef enum {
     DAY,
 } date_type;
 
+typedef const char* (*getter)(record_t*);
+
 bool validate_input(const char* input, const char* pattern);
 sqlite3* open_db(const char* db_name);
-// void execute(const char* input);
 bool check_file(const char* buf);
 void import_csv(char* filename);
 void retrieve_or_report(void);
@@ -69,8 +70,9 @@ void add_payee_filter(char* stmt, int payee_id);
 void add_limit_filter(char* stmt, char* n_limits);
 void compose_sql_stmt(st_query* user_query);
 void compose_summary_stmt(st_query* user_stmt);
-int unique_months(record_t* tr_data, const char* months[], int n_months);
-int unique_names(record_t* tr_data, const char* names[], int len);
+int unique_data(
+    record_t* tr_data, getter get_data, const char* result[], int len);
+// int unique_names(record_t* tr_data, const char* names[], int len);
 void print_query(st_query* user_query);
 void print_summary(st_query* user_stmt);
 void delete_duplicates(void);
@@ -154,11 +156,6 @@ bool validate_input(const char* input, const char* pattern)
     }
 }
 
-// void execute(const char* input)
-// {
-//     // char buf[1024];
-// }
-
 void import_bank_stmt(void)
 {
     char* filename;
@@ -227,13 +224,7 @@ void parse_txt(char* filename)
 
 void import_csv(char* filename)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
+    sqlite3* db = open_db(DB);
     char* csv_file = filename;
     if (strstr(filename, ".txt")) {
         parse_txt(filename);
@@ -445,25 +436,12 @@ void summary_prompt(void)
 
 void summary_by_payee(void)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
-    printf("\n[[ Category List ]]\n");
-    int cat_items = print_items(&db, "categories", -1);
-    if (cat_items < 0) {
-        printf("!! Cannot fetch data from database: categories !!\n");
-        return;
-    } else if (cat_items == 0) {
-        printf("No items on category list");
-    }
+    sqlite3* db = open_db(DB);
+    print_list_with_id(&db, 0, -1);
     sqlite3_close(db);
 
     while (1) {
-        char* input = readline("\n\nCategory (number): ");
+        char* input = readline("\n\nCategory [number]: ");
         if (input != NULL) {
             if (*input) {
                 add_history(input);
@@ -481,7 +459,7 @@ void summary_budget(int cat_id)
     st_query user_stmt;
     user_stmt.cat_id = cat_id;
     while (1) {
-        char* input = readline("\nEnter month or year for summary: ");
+        char* input = readline("\nDate for summary: ");
         if (input != NULL) {
             if (*input) {
                 add_history(input);
@@ -530,7 +508,8 @@ void compose_summary_stmt(st_query* user_stmt)
     strlcpy(user_stmt->sql_stmt, sql_stmt, sizeof(user_stmt->sql_stmt) - 1);
 }
 
-int unique_months(record_t* tr_data, const char* months[], int n_months)
+int unique_data(
+    record_t* tr_data, getter get_data, const char* result[], int len)
 {
     int idx = 0;
     for (record_t* recordp = tr_data; recordp != NULL;
@@ -538,66 +517,60 @@ int unique_months(record_t* tr_data, const char* months[], int n_months)
         if (get_id(recordp) == 0) {
             continue;
         }
-        const char* month = get_date(recordp);
+        const char* data = get_data(recordp);
         bool exist = false;
         for (int i = 0; i < idx; i++) {
-            if (strcmp(month, months[i]) == 0) {
-                exist = true;
-                break;
-            }
-        }
-        if (!exist) {
-            if (idx < n_months - 1) {
-                months[idx] = month;
-                idx++;
-            } else {
-                break;
-            }
-        }
-    }
-    months[idx] = NULL;
-    return idx;
-}
-
-int unique_names(record_t* tr_data, const char* names[], int len)
-{
-    int idx = 0;
-    for (record_t* recordp = tr_data; recordp != NULL;
-        recordp = next_record(recordp)) {
-        if (get_id(recordp) == 0) {
-            continue;
-        }
-        const char* name = get_name(recordp);
-        bool exist = false;
-        for (int i = 0; i < idx; i++) {
-            if (strcmp(name, names[i]) == 0) {
+            if (strcmp(data, result[i]) == 0) {
                 exist = true;
                 break;
             }
         }
         if (!exist) {
             if (idx < len - 1) {
-                names[idx] = name;
+                result[idx] = data;
                 idx++;
             } else {
                 break;
             }
         }
     }
-    names[idx] = NULL;
+    result[idx] = NULL;
     return idx;
 }
+
+// int unique_names(record_t* tr_data, const char* names[], int len)
+// {
+//     int idx = 0;
+//     for (record_t* recordp = tr_data; recordp != NULL;
+//         recordp = next_record(recordp)) {
+//         if (get_id(recordp) == 0) {
+//             continue;
+//         }
+//         const char* name = get_name(recordp);
+//         bool exist = false;
+//         for (int i = 0; i < idx; i++) {
+//             if (strcmp(name, names[i]) == 0) {
+//                 exist = true;
+//                 break;
+//             }
+//         }
+//         if (!exist) {
+//             if (idx < len - 1) {
+//                 names[idx] = name;
+//                 idx++;
+//             } else {
+//                 break;
+//             }
+//         }
+//     }
+//     names[idx] = NULL;
+//     return idx;
+// }
 
 void print_summary(st_query* user_stmt)
 {
     bool by_payee = user_stmt->cat_id > 0;
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
+    sqlite3* db = open_db(DB);
     const char* sql_stmt = (const char*)user_stmt->sql_stmt;
     // printf("\n> SQL Statement: %s\n\n", sql_stmt);
 
@@ -631,8 +604,8 @@ void print_summary(st_query* user_stmt)
     // Get unique months and categories
     const char* months[TOTAL_MONTHS + 1];
     const char* names[TOTAL_CATEGORIES + 1];
-    int nmonths = unique_months(tr_data, months, TOTAL_MONTHS + 1);
-    unique_names(tr_data, names, TOTAL_CATEGORIES + 1);
+    int nmonths = unique_data(tr_data, get_date, months, TOTAL_MONTHS + 1);
+    unique_data(tr_data, get_name, names, TOTAL_CATEGORIES + 1);
 
     // Print result
     for (int row = 0; row < (nmonths + SUMMARY_COLUMNS - 1) / SUMMARY_COLUMNS;
@@ -845,7 +818,7 @@ void print_query(st_query* user_query)
         exit(1);
     }
 
-    float sum_amount = 0.0;
+    float sum_amount = 0.0f;
     printf("DATE             CATEGORY      AMOUNT   DESCRIPTION\n");
     printf("---------------------------------------------------\n");
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
@@ -1010,14 +983,7 @@ static int add_item(sqlite3** db, const char* input, const char* tablename)
 
 void add_categories(void)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
-
+    sqlite3* db = open_db(DB);
     print_list_with_id(&db, 0, -1);
     char* category = readline("\n\nEnter number or new category: ");
     int cat_id = 0;
@@ -1085,7 +1051,7 @@ int print_list_with_id(sqlite3** db, int list_idx, int cat_id)
 record_t* get_statistics(record_t* tr_data, stat_type type)
 {
     const char* names[TOTAL_CATEGORIES];
-    unique_names(tr_data, names, TOTAL_CATEGORIES);
+    unique_data(tr_data, get_name, names, TOTAL_CATEGORIES);
 
     record_t* payee_stats = record_init();
     if (type == MEAN) {
@@ -1104,13 +1070,7 @@ record_t* get_statistics(record_t* tr_data, stat_type type)
 
 void print_statistics(void)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
+    sqlite3* db = open_db(DB);
     print_list_with_id(&db, 0, -1);
     char* cat_id;
     while (1) {
@@ -1126,7 +1086,6 @@ void print_statistics(void)
 
     int year = get_today_date(YEAR);
     int month = get_today_date(MONTH);
-    // int day = get_today_date(DAY);
 
     char sql_stmt[512];
     snprintf(sql_stmt, sizeof(sql_stmt),
@@ -1139,7 +1098,6 @@ void print_statistics(void)
 
     free(cat_id);
 
-    printf(">> SQL statement: %s\n", sql_stmt);
     // printf(">> SQL statement: %s\n", sql_stmt);
     sqlite3_stmt* prepared_stmt;
     if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
@@ -1168,7 +1126,7 @@ void print_statistics(void)
     printf("       CATEGORY   ITEMS                       MEAN        STDEV\n");
     printf("---------------------------------------------------------------\n");
     const char* items[TOTAL_CATEGORIES];
-    unique_names(tr_data, items, TOTAL_CATEGORIES);
+    unique_data(tr_data, get_name, items, TOTAL_CATEGORIES);
     record_t* mean_by_item = get_statistics(tr_data, MEAN);
     record_t* stdev_by_item = get_statistics(tr_data, STDEV);
     for (int i = 0; items[i]; i++) {
@@ -1181,14 +1139,7 @@ void print_statistics(void)
 
 void view_rules(void)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
-
+    sqlite3* db = open_db(DB);
     print_list_with_id(&db, 0, -1);
     char* cat_id;
     while (1) {
@@ -1230,14 +1181,7 @@ void view_rules(void)
 
 void update_categories(void)
 {
-    sqlite3* db;
-    if (sqlite3_open_v2(
-            DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
-        fprintf(stderr, "db open error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        exit(1);
-    }
-
+    sqlite3* db = open_db(DB);
     const char* payee_update
         = "UPDATE transactions SET payee_id = "
           "(SELECT r.payee_id FROM rules r WHERE "
