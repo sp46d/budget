@@ -20,6 +20,7 @@ $1 ~ /^[0-9]{2}\/[0-9]{2}\/[0-9]{4}/ {
     # normalize by removing all noisy tokens
     gsub(/[ .,;:\/#*-]/, "", $5)
     $5 = tolower($5)
+    $5 = substr($5, 0, 50)
     # create category and merchant columns
     $6 = 0
     $7 = 0
