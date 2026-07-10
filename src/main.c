@@ -9,10 +9,9 @@
 // DONE: Add monthly/yearly summary report
 // TODO: Clean up all functions and codes
 // TODO: Split codes into multiple files
-// TODO: When updating data, report the number of items affected (category,
-// duplicate)
-// TODO: Find recurring payments and notify what payments are left and when is
-// due
+// TODO: Add forecast report
+// TODO: Allow for modifying categories and payees and their rule patterns
+// TODO: Cache categories and payee
 
 #include "record.h"
 #include <ctype.h>
@@ -75,6 +74,9 @@ int unique_data(
 // int unique_names(record_t* tr_data, const char* names[], int len);
 void print_query(st_query* user_query);
 void print_summary(st_query* user_stmt);
+void forecast_prompt(void);
+void print_forecast_fixed(const char* date);
+void print_past_trend(const char* date);
 void delete_duplicates(void);
 void update_categories(void);
 int get_today_date(date_type type);
@@ -310,7 +312,7 @@ void retrieve_or_report(void)
                 free(input);
                 break;
             } else if (strcmp(input, "f") == 0 || strcmp(input, "F") == 0) {
-                printf("Forecast report chosen!\n");
+                forecast_prompt();
                 free(input);
                 break;
             } else if (strcmp(input, "m") == 0 || strcmp(input, "M") == 0) {
@@ -538,35 +540,6 @@ int unique_data(
     return idx;
 }
 
-// int unique_names(record_t* tr_data, const char* names[], int len)
-// {
-//     int idx = 0;
-//     for (record_t* recordp = tr_data; recordp != NULL;
-//         recordp = next_record(recordp)) {
-//         if (get_id(recordp) == 0) {
-//             continue;
-//         }
-//         const char* name = get_name(recordp);
-//         bool exist = false;
-//         for (int i = 0; i < idx; i++) {
-//             if (strcmp(name, names[i]) == 0) {
-//                 exist = true;
-//                 break;
-//             }
-//         }
-//         if (!exist) {
-//             if (idx < len - 1) {
-//                 names[idx] = name;
-//                 idx++;
-//             } else {
-//                 break;
-//             }
-//         }
-//     }
-//     names[idx] = NULL;
-//     return idx;
-// }
-
 void print_summary(st_query* user_stmt)
 {
     bool by_payee = user_stmt->cat_id > 0;
@@ -643,6 +616,146 @@ void print_summary(st_query* user_stmt)
     }
     sqlite3_finalize(prepared_stmt);
     sqlite3_close(db);
+}
+
+void forecast_prompt(void)
+{
+    // st_query user_stmt;
+    char* input;
+    while (true) {
+        if ((input = readline("\nDate (YYYY-MM-DD): ")) != NULL) {
+            if (*input) {
+                add_history(input);
+            }
+            if (validate_input(input, "^[0-9]{4}[-][0-9]{1,2}[-][0-9]{1,2}$")) {
+                // strlcpy(user_stmt.date, input, sizeof(user_stmt.date) - 1);
+                print_forecast_fixed(input);
+                print_past_trend(input);
+                free(input);
+                break;
+            } else {
+                printf("\n!! Not a valid date format !!\n");
+            }
+        }
+        free(input);
+    }
+}
+
+void print_forecast_fixed(const char* date)
+{
+    sqlite3* db = open_db(DB);
+    char* datep;
+    char* tofree;
+    tofree = datep = strdup(date);
+    int year = atoi(strsep(&datep, "-"));
+    int month = atoi(strsep(&datep, "-"));
+    int day = atoi(strsep(&datep, "-"));
+    free(tofree);
+
+    char sql_stmt[1536];
+    snprintf(sql_stmt, sizeof(sql_stmt),
+        "SELECT p.name, min(t.day) AS earliest, max(t.day) AS latest, "
+        "avg(t.amount) AS avg_amount FROM transactions t LEFT OUTER JOIN "
+        "payee p ON t.payee_id = p.id LEFT OUTER JOIN categories c ON "
+        "p.cat_id = c.id WHERE t.date BETWEEN '2026-01-01' AND '2026-05-31' "
+        "AND c.name = 'fixed' AND p.name != 'Mortgage' AND t.amount < -9 GROUP "
+        "BY p.name HAVING latest > %d ORDER BY earliest;",
+        day);
+
+    sqlite3_stmt* prepared_stmt;
+    if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
+        != SQLITE_OK) {
+        fprintf(stderr, "sqlite3_prepare: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(prepared_stmt);
+        sqlite3_close(db);
+        exit(1);
+    }
+
+    printf(
+        "\n[[ Forecast Report as of '%4d-%02d-%02d' ]]\n\n", year, month, day);
+    printf("1. Upcoming fixed expenses\n\n");
+    printf("---------------------------------------------------------\n");
+    printf("     Due Date\n");
+    printf(" Earliest  Latest    ITEMS                 AMOUNT (avg)\n");
+    printf("---------------------------------------------------------\n");
+    float total = 0.0f;
+    while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
+        const char* payee = (const char*)sqlite3_column_text(prepared_stmt, 0);
+        int earliest = sqlite3_column_int(prepared_stmt, 1);
+        int latest = sqlite3_column_int(prepared_stmt, 2);
+        float amount = (float)sqlite3_column_double(prepared_stmt, 3);
+        total += amount;
+        printf(" %5d     %4d      %-20s  %12.2f\n", earliest, latest, payee,
+            amount);
+    }
+    printf("---------------------------------------------------------\n");
+    printf("                     TOTAL:                %12.2f\n", total);
+    sqlite3_finalize(prepared_stmt);
+    sqlite3_close(db);
+}
+
+int compute_date(const char* current_date, int nmonth_ago, date_type type)
+{
+    char* datep;
+    char* tofree;
+    tofree = datep = strdup(current_date);
+    int year = atoi(strsep(&datep, "-"));
+    int month = atoi(strsep(&datep, "-"));
+    int day = atoi(strsep(&datep, "-"));
+    free(tofree);
+    int past_date[3];
+    past_date[YEAR] = (month - nmonth_ago <= 0) ? year - 1 : year;
+    past_date[MONTH] = (month - nmonth_ago <= 0) ? month + 12 - nmonth_ago
+                                                 : month - nmonth_ago;
+    past_date[DAY] = day;
+    return past_date[type];
+}
+
+void print_past_trend(const char* date)
+{
+    sqlite3* db = open_db(DB);
+    int day = compute_date(date, 0, DAY);
+    char sql_stmt[1024];
+    snprintf(sql_stmt, sizeof(sql_stmt),
+        "WITH agg_tb AS ("
+        "SELECT strftime('%%Y-%%m', t.date) AS date_y_m, "
+        "sum(t.amount) AS sum_amount, c.name AS category "
+        "FROM transactions t "
+        "LEFT OUTER JOIN categories c ON t.cat_id = c.id "
+        "LEFT OUTER JOIN payee p ON t.payee_id = p.id "
+        "WHERE t.cat_id != 0 AND t.date BETWEEN '%d-%02d-01' AND '%d-%02d-31' "
+        "AND p.name != 'Mortgage' AND t.day > %d "
+        "GROUP BY t.cat_id, date_y_m "
+        "ORDER By date_y_m, t.cat_id) "
+        "SELECT category, avg(sum_amount) AS avg_amount "
+        "FROM agg_tb GROUP BY category;",
+        compute_date(date, 3, YEAR), compute_date(date, 3, MONTH),
+        compute_date(date, 1, YEAR), compute_date(date, 1, MONTH), day);
+
+    sqlite3_stmt* prepared_stmt;
+    if (sqlite3_prepare_v2(db, sql_stmt, -1, &prepared_stmt, NULL)
+        != SQLITE_OK) {
+        fprintf(stderr, "sqlite3_prepare: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(prepared_stmt);
+        sqlite3_close(db);
+        exit(1);
+    }
+
+    printf("\n2. Expense trend after Day-%d in past three months\n\n", day);
+    // printf(">> SQL Statement: %s\n\n", sql_stmt);
+    printf("--------------------------------\n");
+    printf(" CATEGORY          AMOUNT (avg)\n");
+    printf("--------------------------------\n");
+    float total = 0.0f;
+    while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
+        const char* category
+            = (const char*)sqlite3_column_text(prepared_stmt, 0);
+        float amount = (float)sqlite3_column_double(prepared_stmt, 1);
+        total += amount;
+        printf(" %-15s   %12.2f\n", category, amount);
+    }
+    printf("--------------------------------\n");
+    printf(" TOTAL:            %12.2f\n", total);
 }
 
 bool is_valid_int(const char* string)
