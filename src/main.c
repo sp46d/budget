@@ -16,6 +16,7 @@
 #include "record.h"
 #include <ctype.h>
 #include <fcntl.h>
+#include <math.h>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <regex.h>
@@ -42,11 +43,6 @@ typedef struct {
 } st_query;
 
 typedef enum {
-    MEAN,
-    STDEV,
-} stat_type;
-
-typedef enum {
     YEAR,
     MONTH,
     DAY,
@@ -71,7 +67,6 @@ void compose_sql_stmt(st_query* user_query);
 void compose_summary_stmt(st_query* user_stmt);
 int unique_data(
     record_t* tr_data, getter get_data, const char* result[], int len);
-// int unique_names(record_t* tr_data, const char* names[], int len);
 void print_query(st_query* user_query);
 void print_summary(st_query* user_stmt);
 void forecast_prompt(void);
@@ -85,7 +80,6 @@ void parse_txt(char* filename);
 void category_prompt(void);
 void add_categories(void);
 int print_list_with_id(sqlite3** db, int list_idx, int cat_id);
-record_t* get_statistics(record_t* tr_data, stat_type type);
 void print_statistics(void);
 void view_rules(void);
 bool is_valid_int(const char* string);
@@ -675,7 +669,7 @@ void print_forecast_fixed(const char* date)
         "\n[[ Forecast Report as of '%4d-%02d-%02d' ]]\n\n", year, month, day);
     printf("1. Upcoming fixed expenses\n\n");
     printf("---------------------------------------------------------\n");
-    printf("     Due Date\n");
+    printf("      Due Date\n");
     printf(" Earliest  Latest    ITEMS                 AMOUNT (avg)\n");
     printf("---------------------------------------------------------\n");
     float total = 0.0f;
@@ -717,18 +711,22 @@ void print_past_trend(const char* date)
     int day = compute_date(date, 0, DAY);
     char sql_stmt[1024];
     snprintf(sql_stmt, sizeof(sql_stmt),
-        "WITH agg_tb AS ("
-        "SELECT strftime('%%Y-%%m', t.date) AS date_y_m, "
-        "sum(t.amount) AS sum_amount, c.name AS category "
+        "SELECT sum(t.amount), c.name AS category "
         "FROM transactions t "
         "LEFT OUTER JOIN categories c ON t.cat_id = c.id "
-        "LEFT OUTER JOIN payee p ON t.payee_id = p.id "
         "WHERE t.cat_id != 0 AND t.date BETWEEN '%d-%02d-01' AND '%d-%02d-31' "
-        "AND p.name != 'Mortgage' AND t.day > %d "
-        "GROUP BY t.cat_id, date_y_m "
-        "ORDER By date_y_m, t.cat_id) "
-        "SELECT category, avg(sum_amount) AS avg_amount "
-        "FROM agg_tb GROUP BY category;",
+        "AND t.payee_id != 25 AND t.day > %d "
+        "GROUP BY t.cat_id ORDER BY t.cat_id;",
+        // "WITH agg_tb AS ("
+        // "SELECT strftime('%%Y-%%m', t.date) AS date_y_m, "
+        // "sum(t.amount) AS sum_amount, c.name AS category "
+        // "FROM transactions t "
+        // "LEFT OUTER JOIN categories c ON t.cat_id = c.id "
+        // "LEFT OUTER JOIN payee p ON t.payee_id = p.id "
+        // "WHERE t.cat_id != 0 AND t.date BETWEEN '%d-%02d-01' AND '%d-%02d-31'
+        // " "AND p.name != 'Mortgage' AND t.day > %d " "GROUP BY t.cat_id,
+        // date_y_m " "ORDER By date_y_m, t.cat_id) " "SELECT category,
+        // avg(sum_amount) AS avg_amount " "FROM agg_tb GROUP BY category;",
         compute_date(date, 3, YEAR), compute_date(date, 3, MONTH),
         compute_date(date, 1, YEAR), compute_date(date, 1, MONTH), day);
 
@@ -749,13 +747,16 @@ void print_past_trend(const char* date)
     float total = 0.0f;
     while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
         const char* category
-            = (const char*)sqlite3_column_text(prepared_stmt, 0);
-        float amount = (float)sqlite3_column_double(prepared_stmt, 1);
+            = (const char*)sqlite3_column_text(prepared_stmt, 1);
+        float amount = (float)sqlite3_column_double(prepared_stmt, 0) / 3;
         total += amount;
         printf(" %-15s   %12.2f\n", category, amount);
     }
     printf("--------------------------------\n");
     printf(" TOTAL:            %12.2f\n", total);
+
+    sqlite3_finalize(prepared_stmt);
+    sqlite3_close(db);
 }
 
 bool is_valid_int(const char* string)
@@ -1126,7 +1127,7 @@ void add_categories(void)
             char sql_rule[128];
             snprintf(sql_rule, sizeof(sql_rule),
                 "INSERT INTO rules (rule_pattern, payee_id) VALUES "
-                "(\"%%%s%%\", %d);",
+                "(\"%s\", %d);",
                 rule, payee_id);
             sqlite3_exec(db, sql_rule, NULL, NULL, NULL);
         }
@@ -1161,26 +1162,6 @@ int print_list_with_id(sqlite3** db, int list_idx, int cat_id)
     return nitems;
 }
 
-record_t* get_statistics(record_t* tr_data, stat_type type)
-{
-    const char* names[TOTAL_CATEGORIES];
-    unique_data(tr_data, get_name, names, TOTAL_CATEGORIES);
-
-    record_t* payee_stats = record_init();
-    if (type == MEAN) {
-        for (int i = 0; names[i]; i++) {
-            add_record(payee_stats, NULL, names[i],
-                (float)average_by_name(tr_data, names[i]));
-        }
-    } else if (type == STDEV) {
-        for (int i = 0; names[i]; i++) {
-            add_record(payee_stats, NULL, names[i],
-                (float)stdev_by_name(tr_data, names[i]));
-        }
-    }
-    return payee_stats;
-}
-
 void print_statistics(void)
 {
     sqlite3* db = open_db(DB);
@@ -1202,11 +1183,14 @@ void print_statistics(void)
 
     char sql_stmt[512];
     snprintf(sql_stmt, sizeof(sql_stmt),
-        "SELECT c.name, p.name, sum(t.amount) AS amount, strftime('%%Y-%%m', "
-        "t.date) AS date_y_m FROM transactions t LEFT OUTER JOIN categories c "
-        "ON t.cat_id = c.id LEFT OUTER JOIN payee p ON t.payee_id = p.id WHERE "
-        "t.date BETWEEN '2025-01-01' AND '%d-%02d-31' AND c.id = %s GROUP BY "
-        "date_y_m, p.id ORDER BY date_y_m, p.id;",
+        "SELECT count(*) AS n, sum(t.amount) AS sum, "
+        "sum(t.amount * t.amount) AS sum_square, p.name, c.name "
+        "FROM transactions t "
+        "LEFT OUTER JOIN payee p ON t.payee_id = p.id "
+        "LEFT OUTER JOIN categories c ON p.cat_id = c.id "
+        "WHERE p.name NOT LIKE 'mortgage' "
+        "AND t.date BETWEEN '2025-01-01' AND '%d-%02d-31' AND t.cat_id = %s "
+        "GROUP BY p.id ORDER BY p.id;",
         year, month - 1, cat_id);
 
     free(cat_id);
@@ -1220,34 +1204,24 @@ void print_statistics(void)
         sqlite3_close(db);
         exit(1);
     }
-    char cat_name[32];
-    record_t* tr_data = record_init();
-    while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
-        // int payee_id = sqlite3_column_int(prepared_stmt, 0);
-        const char* category
-            = (const char*)sqlite3_column_text(prepared_stmt, 0);
-        const char* payee = (const char*)sqlite3_column_text(prepared_stmt, 1);
-        float amount = (float)sqlite3_column_double(prepared_stmt, 2);
-        const char* date = (const char*)sqlite3_column_text(prepared_stmt, 3);
-        add_record(tr_data, date, payee, amount);
-        strlcpy(cat_name, category, sizeof(cat_name) - 1);
-    }
-    sqlite3_finalize(prepared_stmt);
-    sqlite3_close(db);
-
     printf("\n");
     printf("       CATEGORY   ITEMS                       MEAN        STDEV\n");
     printf("---------------------------------------------------------------\n");
-    const char* items[TOTAL_CATEGORIES];
-    unique_data(tr_data, get_name, items, TOTAL_CATEGORIES);
-    record_t* mean_by_item = get_statistics(tr_data, MEAN);
-    record_t* stdev_by_item = get_statistics(tr_data, STDEV);
-    for (int i = 0; items[i]; i++) {
-        printf("%15s   ", cat_name);
-        printf("%-20s  ", items[i]);
-        printf("%10.2f   ", lookup_amount(mean_by_item, "", items[i]));
-        printf("%10.2f\n", lookup_amount(stdev_by_item, "", items[i]));
+    while (sqlite3_step(prepared_stmt) == SQLITE_ROW) {
+        const char* category
+            = (const char*)sqlite3_column_text(prepared_stmt, 4);
+        const char* payee = (const char*)sqlite3_column_text(prepared_stmt, 3);
+        double sum = sqlite3_column_double(prepared_stmt, 1);
+        double sum_square = sqlite3_column_double(prepared_stmt, 2);
+        int n = sqlite3_column_int(prepared_stmt, 0);
+        double variance = (sum_square - (sum * sum) / n) / (n - 1);
+        printf("%15s   ", category);
+        printf("%-20s  ", payee);
+        printf("%10.2f   ", (float)sum / n);
+        printf("%10.2f\n", (float)sqrt(variance));
     }
+    sqlite3_finalize(prepared_stmt);
+    sqlite3_close(db);
 }
 
 void view_rules(void)
@@ -1299,14 +1273,16 @@ void update_categories(void)
         = "UPDATE transactions SET payee_id = "
           "(SELECT r.payee_id FROM rules r WHERE "
           "transactions.description_n LIKE r.rule_pattern "
-          "LIMIT 1) WHERE payee_id = 0;"
+          "LIMIT 1);"
+          // WHERE payee_id = 0;"
           "UPDATE transactions SET payee_id = 0 WHERE payee_id IS NULL;";
 
     const char* cat_update
         = "UPDATE transactions SET cat_id = "
           "(SELECT p.cat_id FROM payee p WHERE "
           "transactions.payee_id = p.id "
-          "LIMIT 1) WHERE cat_id = 0; "
+          "LIMIT 1);"
+          // WHERE cat_id = 0; "
           "UPDATE transactions SET cat_id = 0 WHERE cat_id IS NULL;";
 
     sqlite3_exec(db, payee_update, NULL, NULL, NULL);
